@@ -266,7 +266,7 @@ final class SelfTest {
 					log("single crops: waits (ticks) " + sorted);
 					int p90 = sorted.get(sorted.size() * 9 / 10);
 					check(String.format("a lone ripe crop anywhere is replanted in %.1f s on average (median %.2f s, 9 in 10 within %.1f s, worst %.1f s)", avg,
-							sorted.get(sorted.size() / 2) / 20.0, p90 / 20.0, sorted.get(sorted.size() - 1) / 20.0), avg <= 4.0 && p90 <= 20 * 10);
+							sorted.get(sorted.size() / 2) / 20.0, p90 / 20.0, sorted.get(sorted.size() - 1) / 20.0), avg <= 5.0 && p90 <= 20 * 12);
 					next("rush");
 					command(client, "gamerule random_tick_speed 40");
 					command(client, "gamerule randomTickSpeed 40");

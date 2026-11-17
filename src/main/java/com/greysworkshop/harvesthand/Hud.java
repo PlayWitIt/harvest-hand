@@ -33,7 +33,7 @@ final class Hud {
 		StringBuilder b = new StringBuilder();
 		b.append(Harvester.harvested).append(" harvested · ").append(Harvester.ripe(client.world)).append(" ripe of ").append(Harvester.farm.cells.size());
 		if (Harvester.waitCount > 0) b.append(" · ").append(String.format("%.1f", Harvester.waitTotal / (double) Harvester.waitCount / 20)).append(" s wait");
-		b.append(" · ").append(Harvester.lastFortune > 0 ? "Fortune " + Harvester.lastFortune : Harvester.lastFortune == 0 ? "by hand" : "");
+		if (Harvester.lastFortune >= 0) b.append(" · ").append(Harvester.lastFortune > 0 ? "Fortune " + Harvester.lastFortune : "by hand");
 		boolean full = client.player.getInventory().getEmptySlot() < 0;
 		lines.add(Text.literal(b + (full ? " · inventory full" : "")).formatted(full ? Formatting.RED : Formatting.GRAY));
 		return lines;

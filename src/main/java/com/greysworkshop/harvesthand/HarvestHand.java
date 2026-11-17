@@ -24,7 +24,7 @@ import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.lit
 public final class HarvestHand implements ClientModInitializer {
 	public static final String MOD_ID = "harvesthand";
 	static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
-	static KeyBinding startKey, pauseKey, stopKey;
+	static KeyBinding startKey, pauseKey, menuKey;
 
 	@Override
 	public void onInitializeClient() {
@@ -32,7 +32,7 @@ public final class HarvestHand implements ClientModInitializer {
 		KeyBinding.Category category = KeyBinding.Category.create(Identifier.of(MOD_ID, "main"));
 		startKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.harvesthand.start", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_KP_4, category));
 		pauseKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.harvesthand.pause", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_KP_5, category));
-		stopKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.harvesthand.stop", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_KP_6, category));
+		menuKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.harvesthand.menu", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_KP_6, category));
 		Chests.init();
 		ClientTickEvents.END_CLIENT_TICK.register(HarvestHand::tick);
 		HudElementRegistry.addLast(Identifier.of(MOD_ID, "hud"), Hud::render);
@@ -42,7 +42,7 @@ public final class HarvestHand implements ClientModInitializer {
 						.executes(c -> {
 							MinecraftClient client = MinecraftClient.getInstance();
 							if (client.player != null) Harvester.chat(client.player, Text.literal(Harvester.running() ? Hud.lines(client).stream().map(Text::getString).reduce((a, b) -> a + " · " + b).orElse("")
-									: "/hh start [radius] while standing in your farm (Numpad 4), /hh pause (Numpad 5), /hh stop (Numpad 6), /hh chest (the chest you look at), /hh perTick <1-4>, /hh radius <4-128>.").formatted(Formatting.GRAY));
+									: "/hh start [radius] while standing in your farm (Numpad 4), /hh pause (Numpad 5), settings (Numpad 6, or /hh menu), /hh stop, /hh chest (the chest you look at), /hh perTick <1-4>, /hh radius <4-128>.").formatted(Formatting.GRAY));
 							return 1;
 						})
 						.then(literal("start").executes(c -> run(client -> Harvester.startOrResume(client)))
@@ -50,6 +50,7 @@ public final class HarvestHand implements ClientModInitializer {
 									int r = IntegerArgumentType.getInteger(c, "radius");
 									return run(client -> Harvester.start(client, r));
 								})))
+						.then(literal("menu").executes(c -> run(client -> client.setScreen(new HhScreen()))))
 						.then(literal("chest").executes(c -> run(Chests::toggleLooked)))
 						.then(literal("pause").executes(c -> run(Harvester::togglePause)))
 						.then(literal("stop").executes(c -> run(client -> Harvester.stop(client, "Stopped."))))
@@ -66,11 +67,12 @@ public final class HarvestHand implements ClientModInitializer {
 			}
 		});
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(() -> Harvester.stop(client, "Stopped: disconnected.")));
-		if (Boolean.getBoolean("harvesthand.selftest")) {
+		for (String[] t : new String[][] {{"harvesthand.selftest", "SelfTest"}, {"harvesthand.farmtest", "FarmTest"}}) {
+			if (!Boolean.getBoolean(t[0])) continue;
 			try {
-				Class.forName("com.greysworkshop.harvesthand.SelfTest").getDeclaredMethod("start").invoke(null);
+				Class.forName("com.greysworkshop.harvesthand." + t[1]).getDeclaredMethod("start").invoke(null);
 			} catch (ReflectiveOperationException e) {
-				LOGGER.error("Self-test missing", e);
+				LOGGER.error("{} missing", t[1], e);
 			}
 		}
 	}
@@ -90,7 +92,7 @@ public final class HarvestHand implements ClientModInitializer {
 	private static void tick(MinecraftClient client) {
 		while (startKey.wasPressed()) if (client.currentScreen == null) Harvester.startOrResume(client);
 		while (pauseKey.wasPressed()) if (client.currentScreen == null) Harvester.togglePause(client);
-		while (stopKey.wasPressed()) if (client.currentScreen == null) Harvester.stop(client, "Stopped.");
+		while (menuKey.wasPressed()) if (client.currentScreen == null && client.player != null) client.setScreen(new HhScreen());
 		Chests.tick(client);
 		Harvester.tick(client);
 	}

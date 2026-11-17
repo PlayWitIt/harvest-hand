@@ -41,8 +41,13 @@ final class Farm {
 	/** Where to wait when there's nothing to do: the standing cell nearest the middle of the crops. */
 	BlockPos centre;
 	int minX, minY, minZ, maxX, maxY, maxZ;
-	/** The crop most of the farm grows: what goes in empty farmland nobody remembers. */
+	/**
+	 * The crop most of the farm grows: what goes in empty farmland nobody remembers. On a bare farm it's whatever seed
+	 * you carry or is lying about (the job picks it).
+	 */
 	Block main;
+	/** Bare dirt and grass the water reaches: tilled and planted, so as much ground as possible grows something. */
+	final Set<BlockPos> bareGround = new HashSet<>();
 
 	static boolean isCrop(Block b) {
 		for (Block c : CROPS) if (c == b) return true;
@@ -80,12 +85,30 @@ final class Farm {
 		return s.isOf(Blocks.DIRT) || s.isOf(Blocks.GRASS_BLOCK) || s.isOf(Blocks.DIRT_PATH) || s.isOf(Blocks.COARSE_DIRT) || s.isOf(Blocks.ROOTED_DIRT);
 	}
 
+	/** Ground a hoe turns into farmland in one go. */
+	static boolean newGround(BlockState s) {
+		return s.isOf(Blocks.DIRT) || s.isOf(Blocks.GRASS_BLOCK) || s.isOf(Blocks.DIRT_PATH);
+	}
+
+	/** Water within 4 blocks, level with it or one up: the farmland stays wet and never dries back to dirt. */
+	static boolean hydrated(ClientWorld w, BlockPos soil) {
+		for (BlockPos q : BlockPos.iterate(soil.add(-4, 0, -4), soil.add(4, 1, 4))) {
+			if (w.getFluidState(q).isIn(net.minecraft.registry.tag.FluidTags.WATER)) return true;
+		}
+		return false;
+	}
+
+	/** Grass, flowers and the like on the ground: in the way of the hoe and the seed, gone in one hit. */
+	static boolean weed(ClientWorld w, BlockPos c, BlockState s) {
+		return !isCrop(s.getBlock()) && s.isReplaceable() && s.getFluidState().isEmpty() && s.getHardness(w, c) == 0;
+	}
+
 	boolean in(BlockPos p) {
 		return p.getX() >= minX && p.getX() <= maxX && p.getZ() >= minZ && p.getZ() <= maxZ && p.getY() >= minY - 2 && p.getY() <= maxY + 2;
 	}
 
 	/** Walks the ground from {@code start} up to {@code radius} blocks out. */
-	static Farm scan(ClientWorld w, BlockPos start, int radius, Set<BlockPos> mine) {
+	static Farm scan(ClientWorld w, BlockPos start, int radius, Set<BlockPos> mine, boolean till) {
 		Farm f = new Farm();
 		Set<BlockPos> seen = new HashSet<>();
 		Set<BlockPos> cellSet = new HashSet<>();
@@ -97,7 +120,12 @@ final class Farm {
 		while (!open.isEmpty() && seen.size() < 120_000) {
 			BlockPos n = open.poll();
 			if (Walker.standable(w, n) && w.getFluidState(n).isEmpty()) f.stand.add(n);
-			if (soil(w.getBlockState(n.down())) && cellSet.add(n)) f.cells.add(n);
+			BlockState under = w.getBlockState(n.down());
+			if (soil(under) && cellSet.add(n)) f.cells.add(n);
+			else if (till && newGround(under) && hydrated(w, n.down()) && w.getFluidState(n).isEmpty() && cellSet.add(n)) {
+				f.cells.add(n);
+				f.bareGround.add(n);
+			}
 			for (Direction d : Direction.Type.HORIZONTAL) {
 				for (int dy = -1; dy <= 1; dy++) {
 					BlockPos side = n.offset(d).up(dy);

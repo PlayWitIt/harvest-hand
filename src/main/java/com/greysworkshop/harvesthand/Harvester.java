@@ -2,6 +2,7 @@ package com.greysworkshop.harvesthand;
 
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
 import net.minecraft.block.ShulkerBoxBlock;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.ContainerComponent;
@@ -104,7 +105,7 @@ public final class Harvester {
 	static void start(MinecraftClient client, int radius) {
 		ClientPlayerEntity p = client.player;
 		if (p == null || client.world == null || running()) return;
-		Farm f = Farm.scan(client.world, Walker.feet(p), radius, Chests.mine(client));
+		Farm f = Farm.scan(client.world, Walker.feet(p), radius, Chests.mine(client), HhConfig.INSTANCE.till);
 		if (f.cells.isEmpty()) {
 			stopReason = "No farmland here: stand inside your farm and start again.";
 			chat(p, Text.literal(stopReason).formatted(Formatting.RED));
@@ -121,6 +122,9 @@ public final class Harvester {
 		cool.clear();
 		unreachable.clear();
 		ripeSince.clear();
+		harvestedAt.clear();
+		undone = 0;
+		undoneWarned = false;
 		fullChests.clear();
 		badSpots.clear();
 		boxWarned = false;
@@ -130,7 +134,7 @@ public final class Harvester {
 		int x = f.maxX - f.minX + 1, z = f.maxZ - f.minZ + 1;
 		chat(p, Text.literal("Farming " + f.cells.size() + " plots (" + x + " × " + z + ")"
 				+ (f.chests.isEmpty() ? "" : ", " + f.chests.size() + " of your chest" + (f.chests.size() == 1 ? "" : "s") + " for a full inventory")
-				+ ". Numpad 5 pauses, Numpad 6 stops.").formatted(Formatting.GREEN));
+				+ ". Numpad 5 pauses, Numpad 6 has the settings and Stop.").formatted(Formatting.GREEN));
 		if (f.chests.isEmpty() && HhConfig.INSTANCE.deposit) {
 			int boxes = emptyBoxes(p.getInventory());
 			chat(p, Text.literal(boxes > 0 ? "A full inventory goes into your " + boxes + " empty shulker box" + (boxes == 1 ? "" : "es")
@@ -138,6 +142,15 @@ public final class Harvester {
 					: "No chest of yours here: place one at the farm's edge (or look at one and /hh chest), or carry empty shulker boxes, to store a full inventory.").formatted(Formatting.GRAY));
 		}
 		chat(p, Text.literal(toolNote(p.getInventory())).formatted(Formatting.GRAY));
+		pickCrop(p.getInventory(), client.world);
+		int bare = (int) f.cells.stream().filter(c -> client.world.getBlockState(c).isAir() || Farm.weed(client.world, c, client.world.getBlockState(c))).count();
+		if (f.main == null) {
+			chat(p, Text.literal("Nothing to plant: carry carrots, potatoes or seeds (or leave some on the ground) and it plants every plot.").formatted(Formatting.GOLD));
+		} else if (bare > 0) {
+			chat(p, Text.literal(bare + " empty plot" + (bare == 1 ? "" : "s") + ": planting " + Farm.seed(f.main).getName().getString().toLowerCase(java.util.Locale.ROOT)
+					+ (f.bareGround.isEmpty() ? "" : ", and tilling " + f.bareGround.size() + " of dirt and grass by the water" + (hoeSlot(p.getInventory()) < 0 ? " (bring a hoe)" : ""))
+					+ ".").formatted(Formatting.GRAY));
+		}
 		log("farm: {} cells, {} standing, {} chests, centre {}, main {}", f.cells.size(), f.stand.size(), f.chests.size(), f.centre, f.main);
 	}
 
@@ -200,9 +213,11 @@ public final class Harvester {
 		}
 		trackRipe(w);
 		float hp = p.getHealth();
-		if (p.hurtTime > 0 || lastHealth >= 0 && hp < lastHealth) fightUntil = ticks + 60;
+		// Hurt with a mob or player close by: let go for a moment. Hunger, a fall or a cactus is no reason to stop.
+		if ((p.hurtTime > 0 || lastHealth >= 0 && hp < lastHealth) && attackerNear(p, w)) fightUntil = ticks + 60;
 		lastHealth = hp;
-		boolean low = hp <= HhConfig.INSTANCE.minHealth;
+		boolean low = HhConfig.INSTANCE.minHealth > 0 && hp <= HhConfig.INSTANCE.minHealth && attackerNear(p, w);
+		if (ticks % 20 == 0 && farm.main == null) pickCrop(p.getInventory(), w);
 		if (paused || low || ticks < fightUntil) {
 			if (!holding) {
 				holding = true;
@@ -253,16 +268,68 @@ public final class Harvester {
 	}
 
 	/** Notes when each crop turned ripe (for the average wait the HUD shows). */
-	private static void trackRipe(ClientWorld w) {
-		if (ticks % 2 != 0) return;
-		for (BlockPos c : farm.cells) {
-			if (Farm.mature(w.getBlockState(c))) ripeSince.putIfAbsent(c, ticks);
-			else ripeSince.remove(c);
+	private static boolean attackerNear(ClientPlayerEntity p, ClientWorld w) {
+		return !w.getEntitiesByClass(net.minecraft.entity.LivingEntity.class, p.getBoundingBox().expand(6),
+				e -> e != p && e.isAlive() && (e instanceof net.minecraft.entity.mob.HostileEntity || e instanceof net.minecraft.entity.player.PlayerEntity
+						|| e instanceof net.minecraft.entity.mob.Angerable)).isEmpty();
+	}
+
+	/**
+	 * On a farm with nothing growing yet: plant what you carry most of, or else what's lying on the ground (it's
+	 * picked up first).
+	 */
+	static void pickCrop(PlayerInventory inv, ClientWorld w) {
+		if (farm == null || farm.main != null) return;
+		Block[] options = {Blocks.CARROTS, Blocks.POTATOES, Blocks.WHEAT, Blocks.BEETROOTS};
+		Block best = null;
+		int bestN = 0;
+		for (Block b : options) {
+			int n = 0;
+			for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (inv.getStack(i).isOf(Farm.seed(b))) n += inv.getStack(i).getCount();
+			if (n > bestN) {
+				best = b;
+				bestN = n;
+			}
+		}
+		if (best == null) {
+			Box box = new Box(farm.minX - 1, farm.minY - 2, farm.minZ - 1, farm.maxX + 2, farm.maxY + 3, farm.maxZ + 2);
+			for (Block b : options) {
+				int n = w.getEntitiesByClass(ItemEntity.class, box, e -> e.getStack().isOf(Farm.seed(b))).stream().mapToInt(e -> e.getStack().getCount()).sum();
+				if (n > bestN) {
+					best = b;
+					bestN = n;
+				}
+			}
+		}
+		if (best != null) {
+			farm.main = best;
+			log("bare farm: planting {}", best);
 		}
 	}
 
+	/** When each harvested cell was harvested: a crop back there at once means the server undid it. */
+	private static final Map<BlockPos, Integer> harvestedAt = new HashMap<>();
+	private static int undone, undoneAt;
+	private static boolean undoneWarned;
+
+	private static void trackRipe(ClientWorld w) {
+		if (ticks % 2 != 0) return;
+		for (BlockPos c : farm.cells) {
+			if (Farm.mature(w.getBlockState(c))) {
+				ripeSince.putIfAbsent(c, ticks);
+				Integer at = harvestedAt.remove(c);
+				if (at != null && ticks - at < 40) {
+					undone++;
+					undoneAt = ticks;
+					log("server undid the harvest at {}", c.toShortString());
+				}
+			} else ripeSince.remove(c);
+		}
+		harvestedAt.values().removeIf(t -> ticks - t >= 40);
+	}
+
 	/** What needs doing in a cell right now, or null. */
-	private enum Need {HARVEST, PLANT, TILL}
+	private enum Need {HARVEST, PLANT, TILL, CLEAR}
 
 	private static Need need(ClientWorld w, PlayerInventory inv, BlockPos c) {
 		BlockState s = w.getBlockState(c);
@@ -270,14 +337,18 @@ public final class Harvester {
 			farm.crop.put(c, s.getBlock());
 			return Farm.mature(s) ? Need.HARVEST : null;
 		}
-		if (!s.isAir()) return null;
 		BlockState below = w.getBlockState(c.down());
+		boolean tillHere = HhConfig.INSTANCE.till && hoeSlot(inv) >= 0
+				&& (Farm.tillable(below) && farm.crop.containsKey(c) || Farm.newGround(below) && farm.bareGround.contains(c));
+		if (!s.isAir()) {
+			// Grass or a flower where a crop should be: clear it.
+			return Farm.weed(w, c, s) && (Farm.soil(below) || tillHere) ? Need.CLEAR : null;
+		}
 		if (Farm.soil(below)) {
 			Block b = farm.wanted(w, c);
 			return b != null && seedSlot(inv, b) >= 0 ? Need.PLANT : null;
 		}
-		if (HhConfig.INSTANCE.till && Farm.tillable(below) && farm.crop.containsKey(c) && hoeSlot(inv) >= 0) return Need.TILL;
-		return null;
+		return tillHere ? Need.TILL : null;
 	}
 
 	/** Does what's in reach, up to the per-tick limit. Returns how many cells it worked. */
@@ -286,6 +357,18 @@ public final class Harvester {
 		double range = p.getBlockInteractionRange() - 0.3;
 		Vec3d eye = p.getEyePos();
 		int done = 0, limit = HhConfig.INSTANCE.perTick;
+		// The server undoing harvests (an anti-cheat, lag): one at a time, every few ticks, until it settles.
+		boolean slow = undone >= 3 && ticks - undoneAt < 400;
+		if (slow) {
+			if (!undoneWarned) {
+				undoneWarned = true;
+				chat(p, Text.literal("The server is undoing some harvests: going slower so they stick.").formatted(Formatting.GOLD));
+			}
+			if (ticks % 4 != 0) return 0;
+			limit = 1;
+		} else if (undone > 0 && ticks - undoneAt >= 400) {
+			undone = 0;
+		}
 		// Nearest first.
 		BlockPos[] near = farm.cells.stream().filter(c -> !cool.containsKey(c) && eye.squaredDistanceTo(Vec3d.ofCenter(c)) <= range * range)
 				.sorted(java.util.Comparator.comparingDouble(c -> eye.squaredDistanceTo(Vec3d.ofCenter(c)))).toArray(BlockPos[]::new);
@@ -305,16 +388,19 @@ public final class Harvester {
 						waitMax = Math.max(waitMax, waited);
 					}
 					harvested++;
+					harvestedAt.put(c, ticks);
 					if (plant(client, p, w, c, b)) replanted++;
 				}
 				case PLANT -> {
 					if (plant(client, p, w, c, farm.wanted(w, c))) planted++;
 				}
 				case TILL -> {
-					if (till(client, p, c)) {
-						tilled++;
-						log("till {} (moisture-free dirt, crop gone)", c.toShortString());
-					}
+					if (till(client, p, c)) tilled++;
+				}
+				case CLEAR -> {
+					look(p, Vec3d.ofCenter(c));
+					client.interactionManager.attackBlock(c, Direction.UP);
+					p.swingHand(Hand.MAIN_HAND);
 				}
 			}
 			// Tilling isn't shown until the server answers: give it a second, not a few ticks.

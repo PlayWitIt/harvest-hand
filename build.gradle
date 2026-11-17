@@ -39,6 +39,7 @@ java {
 // The scripted self-test is for development only.
 jar {
 	exclude 'com/greysworkshop/harvesthand/SelfTest*'
+	exclude 'com/greysworkshop/harvesthand/FarmTest*'
 }
 
 loom {
@@ -47,6 +48,12 @@ loom {
 			client()
 			name = "Self Test"
 			vmArgs "-Dharvesthand.selftest=true", "-Dharvesthand.debug=true", "-Xmx1536m"
+			runDir "run"
+		}
+		farmTest {
+			client()
+			name = "Farm Test"
+			vmArgs "-Dharvesthand.farmtest=true", "-Dharvesthand.debug=true", "-Xmx1536m"
 			runDir "run"
 		}
 	}
