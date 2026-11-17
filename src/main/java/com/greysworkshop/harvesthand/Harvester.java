@@ -2,6 +2,11 @@ package com.greysworkshop.harvesthand;
 
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.ShulkerBoxBlock;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.ContainerComponent;
+import net.minecraft.item.BlockItem;
+import net.minecraft.screen.ShulkerBoxScreenHandler;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.world.ClientWorld;
@@ -34,9 +39,10 @@ import java.util.function.Predicate;
  * The job: every tick, anything in reach that's fully grown is broken (with the best Fortune tool you have, by hand if
  * there's none) and the same crop goes straight back in; empty farmland gets planted, trampled farmland tilled again.
  * Between times it walks to the next ripe crop or dropped item, harvesting whatever it passes, and waits in the middle
- * of the farm when there's nothing to do. A full inventory goes into a chest or barrel at the farm's edge.
+ * of the farm when there's nothing to do. A full inventory goes into a chest you placed yourself (never one it just
+ * finds), or else into an empty shulker box you carry: put against the wall, filled, broken and picked back up.
  */
-final class Harvester {
+public final class Harvester {
 	enum State {OFF, RUN, DEPOSIT}
 
 	static State state = State.OFF;
@@ -65,8 +71,21 @@ final class Harvester {
 	private static float lastHealth = -1;
 	private static BlockPos chest;
 	private static final java.util.Set<BlockPos> fullChests = new java.util.HashSet<>();
+	/** The shulker box it has put down to fill (null: none), the wall face it's on, and spots that didn't work. */
+	static BlockPos box;
+	private static BlockPos spot;
+	private static BlockPos boxWall;
+	private static Direction boxFace;
+	private static int boxHeld, boxTicks;
+	private static final java.util.Set<BlockPos> badSpots = new java.util.HashSet<>();
+	private static boolean boxWarned;
 
 	private Harvester() {}
+
+	/** True while it's breaking its shulker box: vanilla mustn't cancel that (see MinecraftClientMixin). */
+	public static boolean breakingBox() {
+		return state == State.DEPOSIT && depositStage == 15 && box != null && !paused && !holding;
+	}
 
 	static boolean running() {
 		return state != State.OFF;
@@ -85,7 +104,7 @@ final class Harvester {
 	static void start(MinecraftClient client, int radius) {
 		ClientPlayerEntity p = client.player;
 		if (p == null || client.world == null || running()) return;
-		Farm f = Farm.scan(client.world, Walker.feet(p), radius);
+		Farm f = Farm.scan(client.world, Walker.feet(p), radius, Chests.mine(client));
 		if (f.cells.isEmpty()) {
 			stopReason = "No farmland here: stand inside your farm and start again.";
 			chat(p, Text.literal(stopReason).formatted(Formatting.RED));
@@ -103,13 +122,21 @@ final class Harvester {
 		unreachable.clear();
 		ripeSince.clear();
 		fullChests.clear();
+		badSpots.clear();
+		boxWarned = false;
 		walkingTo = null;
 		stopReason = "";
 		status = Text.literal("Watching");
 		int x = f.maxX - f.minX + 1, z = f.maxZ - f.minZ + 1;
 		chat(p, Text.literal("Farming " + f.cells.size() + " plots (" + x + " × " + z + ")"
-				+ (f.chests.isEmpty() ? "" : ", " + f.chests.size() + " chest" + (f.chests.size() == 1 ? "" : "s") + " for a full inventory")
+				+ (f.chests.isEmpty() ? "" : ", " + f.chests.size() + " of your chest" + (f.chests.size() == 1 ? "" : "s") + " for a full inventory")
 				+ ". Numpad 5 pauses, Numpad 6 stops.").formatted(Formatting.GREEN));
+		if (f.chests.isEmpty() && HhConfig.INSTANCE.deposit) {
+			int boxes = emptyBoxes(p.getInventory());
+			chat(p, Text.literal(boxes > 0 ? "A full inventory goes into your " + boxes + " empty shulker box" + (boxes == 1 ? "" : "es")
+					+ " (put against the wall, filled and picked back up). Place a chest yourself to store in that instead."
+					: "No chest of yours here: place one at the farm's edge (or look at one and /hh chest), or carry empty shulker boxes, to store a full inventory.").formatted(Formatting.GRAY));
+		}
 		chat(p, Text.literal(toolNote(p.getInventory())).formatted(Formatting.GRAY));
 		log("farm: {} cells, {} standing, {} chests, centre {}, main {}", f.cells.size(), f.stand.size(), f.chests.size(), f.centre, f.main);
 	}
@@ -138,6 +165,10 @@ final class Harvester {
 		if (eating > 0) client.options.useKey.setPressed(false);
 		eating = 0;
 		closeChest(client);
+		if (box != null && client.world != null && client.player != null && client.world.getBlockState(box).getBlock() instanceof ShulkerBoxBlock) {
+			chat(client.player, Text.literal("Your shulker box is still on the wall at " + box.toShortString() + ": break it to get it back.").formatted(Formatting.RED));
+		}
+		box = null;
 		state = State.OFF;
 		paused = false;
 		stopReason = why;
@@ -193,6 +224,12 @@ final class Harvester {
 		cool.values().removeIf(t -> t <= ticks);
 		if (state == State.DEPOSIT) {
 			deposit(client, p, w);
+			return;
+		}
+		if (box != null) {
+			// A box is still out (a hit or a pause got in the way): get it back first.
+			state = State.DEPOSIT;
+			depositStage = 15;
 			return;
 		}
 		if (shouldDeposit(p)) {
@@ -274,7 +311,10 @@ final class Harvester {
 					if (plant(client, p, w, c, farm.wanted(w, c))) planted++;
 				}
 				case TILL -> {
-					if (till(client, p, c)) tilled++;
+					if (till(client, p, c)) {
+						tilled++;
+						log("till {} (moisture-free dirt, crop gone)", c.toShortString());
+					}
 				}
 			}
 			// Tilling isn't shown until the server answers: give it a second, not a few ticks.
@@ -411,8 +451,13 @@ final class Harvester {
 		return d - (since == null ? 0 : Math.min(15, (ticks - since) / 20.0));
 	}
 
+	/**
+	 * Ripe crops come first: a fresh drop counts as 12 blocks further off than it is, a point less every 5 seconds it
+	 * lies there, so it's fetched within about a minute (long before the 5 minutes it takes to despawn). A seed it has
+	 * run out of is fetched at once.
+	 */
 	private static double dropScore(ItemEntity e, double d, java.util.Set<Item> missing) {
-		return missing.contains(e.getStack().getItem()) ? d - 100 : d + 4 - e.getItemAge() / 200.0;
+		return missing.contains(e.getStack().getItem()) ? d - 100 : d + 12 - e.getItemAge() / 100.0;
 	}
 
 	/** The score of where it's headed now (the best drop in that cell, for drops). */
@@ -506,11 +551,13 @@ final class Harvester {
 			fullWarned = false;
 			return false;
 		}
-		if (!HhConfig.INSTANCE.deposit || farm.chests.isEmpty() || fullChests.containsAll(farm.chests) || depositable(inv).isEmpty()) {
+		boolean chests = !farm.chests.isEmpty() && !fullChests.containsAll(farm.chests);
+		boolean boxes = !boxWarned && emptyBoxes(inv) > 0;
+		if (!HhConfig.INSTANCE.deposit || !chests && !boxes || depositable(inv).isEmpty()) {
 			if (!fullWarned) {
 				fullWarned = true;
-				chat(p, Text.literal(farm.chests.isEmpty() ? "Inventory full: still harvesting and replanting, but drops stay on the ground. Put a chest at the farm's edge and restart to store them."
-						: "Inventory full and the chests are full: still harvesting and replanting, drops stay on the ground.").formatted(Formatting.GOLD));
+				chat(p, Text.literal(farm.chests.isEmpty() ? "Inventory full: still harvesting and replanting, but drops stay on the ground. Place a chest at the farm's edge (or carry empty shulker boxes) to store them."
+						: "Inventory full and your chests are full: still harvesting and replanting, drops stay on the ground.").formatted(Formatting.GOLD));
 			}
 			return false;
 		}
@@ -550,7 +597,10 @@ final class Harvester {
 				chest = farm.chests.stream().filter(c -> !fullChests.contains(c))
 						.min(java.util.Comparator.comparingDouble(c -> p.getEntityPos().squaredDistanceTo(Vec3d.ofCenter(c)))).orElse(null);
 				if (chest == null) {
-					state = State.RUN;
+					spot = null;
+					// None of your chests has room: an empty shulker box, if you carry one.
+					depositStage = emptyBoxes(p.getInventory()) > 0 && !boxWarned ? 10 : -1;
+					if (depositStage < 0) state = State.RUN;
 					return;
 				}
 				BlockPos c = chest;
@@ -622,8 +672,267 @@ final class Harvester {
 				}
 				depositWait = 1;
 			}
-			default -> depositStage = 0;
+			case 10, 11, 12, 13, 14, 15, 16 -> shulker(client, p, w);
+			default -> {
+				depositStage = 0;
+				state = State.RUN;
+			}
 		}
+	}
+
+	// ---------------------------------------------------------------- the shulker box
+
+	static boolean emptyBox(ItemStack s) {
+		if (!(s.getItem() instanceof BlockItem bi) || !(bi.getBlock() instanceof ShulkerBoxBlock)) return false;
+		ContainerComponent c = s.get(DataComponentTypes.CONTAINER);
+		return c == null || c.streamNonEmpty().findAny().isEmpty();
+	}
+
+	static boolean isBox(ItemStack s) {
+		return s.getItem() instanceof BlockItem bi && bi.getBlock() instanceof ShulkerBoxBlock;
+	}
+
+	static int emptyBoxes(PlayerInventory inv) {
+		int n = 0;
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (emptyBox(inv.getStack(i))) n += inv.getStack(i).getCount();
+		return n;
+	}
+
+	static int boxes(PlayerInventory inv) {
+		int n = 0;
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (isBox(inv.getStack(i))) n += inv.getStack(i).getCount();
+		return n;
+	}
+
+	/**
+	 * Somewhere to put a box: at head height against a wall, beside a cell you can stand on, with air in front so it
+	 * opens. Nearest first.
+	 */
+	private static BlockPos[] boxSpot(ClientPlayerEntity p, ClientWorld w) {
+		BlockPos best = null, bestWall = null;
+		double bestD = Double.MAX_VALUE;
+		for (BlockPos n : farm.stand) {
+			double d = n.getSquaredDistance(p.getEntityPos());
+			if (d >= bestD || d > 40 * 40) continue;
+			BlockPos spot = n.up();
+			if (badSpots.contains(spot) || !w.getBlockState(spot).isAir()) continue;
+			for (Direction dir : Direction.Type.HORIZONTAL) {
+				BlockPos wall = spot.offset(dir);
+				BlockState ws = w.getBlockState(wall);
+				if (!ws.isSideSolidFullSquare(w, wall, dir.getOpposite()) || ws.hasBlockEntity() || farm.cells.contains(wall)) continue;
+				if (!w.getBlockState(spot.offset(dir.getOpposite())).isAir()) continue;
+				best = spot;
+				bestWall = wall;
+				bestD = d;
+				break;
+			}
+		}
+		return best == null ? null : new BlockPos[] {best, bestWall};
+	}
+
+	private static void shulker(MinecraftClient client, ClientPlayerEntity p, ClientWorld w) {
+		PlayerInventory inv = p.getInventory();
+		double range = p.getBlockInteractionRange() - 0.3;
+		boxTicks++;
+		switch (depositStage) {
+			case 10 -> {
+				status = Text.literal("Putting down a shulker box");
+				BlockPos[] s = boxSpot(p, w);
+				if (s == null) {
+					giveUpBox(p, "Nowhere to put a shulker box: it needs a wall at head height with air in front.");
+					return;
+				}
+				spot = s[0];
+				boxWall = s[1];
+				boxFace = Direction.getFacing(Vec3d.of(spot.subtract(boxWall)));
+				BlockPos under = spot.down(), at = spot;
+				Vec3d mid = Vec3d.ofCenter(spot);
+				double want = range - 0.9;
+				// Not under the box, or where it goes.
+				if (!walker.plan(w, p, q -> !q.equals(under) && !q.equals(at) && Vec3d.ofBottomCenter(q).add(0, 1.62, 0).squaredDistanceTo(mid) <= want * want, bounds(p))) {
+					badSpots.add(spot);
+					spot = null;
+					return;
+				}
+				boxTicks = 0;
+				depositStage = 11;
+			}
+			case 11 -> {
+				status = Text.literal("Putting down a shulker box");
+				boolean inside = p.getBoundingBox().intersects(new Box(spot));
+				if (!inside && p.getEyePos().squaredDistanceTo(Vec3d.ofCenter(spot)) <= range * range && (walker.arrived() || !walker.moving())) {
+					walker.stop(client);
+					int slot = -1;
+					for (int i = 0; i < PlayerInventory.MAIN_SIZE && slot < 0; i++) if (emptyBox(inv.getStack(i))) slot = i;
+					if (slot < 0) {
+						spot = null;
+						depositStage = -1;
+						return;
+					}
+					hand(client, p, slot, -1);
+					boxHeld = boxes(inv);
+					Vec3d hit = Vec3d.ofCenter(boxWall).add(Vec3d.of(boxFace.getVector()).multiply(0.5));
+					look(p, hit);
+					client.interactionManager.interactBlock(p, Hand.MAIN_HAND, new BlockHitResult(hit, boxFace, boxWall, false));
+					p.swingHand(Hand.MAIN_HAND);
+					boxTicks = 0;
+					depositStage = 12;
+					return;
+				}
+				if (!walker.tick(client) || walker.arrived() && !walker.moving() || boxTicks > 400) {
+					badSpots.add(spot);
+					spot = null;
+					depositStage = 10;
+				}
+			}
+			case 12 -> {
+				// Placed (the server agrees: still there after a few ticks)? Then open it.
+				if (boxTicks < 6) return;
+				if (!(w.getBlockState(spot).getBlock() instanceof ShulkerBoxBlock)) {
+					if (boxTicks < 30) return;
+					log("box didn't go down at {}", spot.toShortString());
+					badSpots.add(spot);
+					spot = null;
+					depositStage = badSpots.size() >= 4 ? 99 : 10;
+					if (depositStage == 99) giveUpBox(p, "Couldn't put a shulker box down here.");
+					return;
+				}
+				// It's down: from here on it has to come back.
+				box = spot;
+				spot = null;
+				Vec3d hit = Vec3d.ofCenter(box).add(Vec3d.of(boxFace.getVector()).multiply(0.5));
+				look(p, hit);
+				client.interactionManager.interactBlock(p, Hand.MAIN_HAND, new BlockHitResult(hit, boxFace, box, false));
+				p.swingHand(Hand.MAIN_HAND);
+				boxTicks = 0;
+				depositStage = 13;
+			}
+			case 13 -> {
+				status = Text.literal("Filling the shulker box");
+				if (p.currentScreenHandler instanceof ShulkerBoxScreenHandler) {
+					boxTicks = 0;
+					depositStage = 14;
+				} else if (boxTicks > 40) {
+					// Wouldn't open (something in front of it): take it back.
+					log("box at {} wouldn't open", box.toShortString());
+					badSpots.add(box);
+					depositStage = 15;
+				}
+			}
+			case 14 -> {
+				status = Text.literal("Filling the shulker box");
+				ScreenHandler h = p.currentScreenHandler;
+				if (!(h instanceof ShulkerBoxScreenHandler)) {
+					depositStage = 15;
+					return;
+				}
+				if (boxTicks % 2 == 1) return;
+				List<Integer> todo = depositable(inv);
+				if (todo.isEmpty() || !containerHasRoom(h, p) || boxTicks > 200) {
+					p.closeHandledScreen();
+					boxTicks = 0;
+					depositStage = 15;
+					return;
+				}
+				int before = todo.size();
+				for (int k = 0; k < Math.min(2, todo.size()); k++) {
+					int i = todo.get(k);
+					Slot slot = playerSlot(h, p, i);
+					if (slot == null) continue;
+					int count = inv.getStack(i).getCount();
+					client.interactionManager.clickSlot(h.syncId, slot.id, 0, SlotActionType.QUICK_MOVE, p);
+					deposited += count - inv.getStack(i).getCount();
+				}
+				if (depositable(inv).size() == before) {
+					p.closeHandledScreen();
+					boxTicks = 0;
+					depositStage = 15;
+				}
+			}
+			case 15 -> {
+				// Break it: with a pickaxe if there's one to spare, by hand if not.
+				status = Text.literal("Taking the shulker box back");
+				if (p.currentScreenHandler != p.playerScreenHandler) p.closeHandledScreen();
+				if (!(w.getBlockState(box).getBlock() instanceof ShulkerBoxBlock)) {
+					client.interactionManager.cancelBlockBreaking();
+					boxTicks = 0;
+					depositStage = 16;
+					return;
+				}
+				if (p.getEyePos().squaredDistanceTo(Vec3d.ofCenter(box)) > range * range) {
+					if (!walker.moving()) {
+						Vec3d mid = Vec3d.ofCenter(box);
+						double want = range - 0.9;
+						BlockPos under = box.down(), b = box;
+						if (!walker.plan(w, p, q -> !q.equals(under) && !q.equals(b) && Vec3d.ofBottomCenter(q).add(0, 1.62, 0).squaredDistanceTo(mid) <= want * want, bounds(p))) {
+							stop(client, "Stopped: can't get back to the shulker box.");
+							return;
+						}
+					}
+					walker.tick(client);
+					return;
+				}
+				walker.stop(client);
+				if (boxTicks <= 1 || !client.interactionManager.isBreakingBlock()) {
+					int pick = -1;
+					for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+						ItemStack s = inv.getStack(i);
+						if (s.isIn(ItemTags.PICKAXES) && safe(s) && (pick < 0 || s.getMaxDamage() - s.getDamage() > inv.getStack(pick).getMaxDamage() - inv.getStack(pick).getDamage())) pick = i;
+					}
+					hand(client, p, pick >= 0 ? pick : harmless(inv), bestTool(inv));
+					boxHeld = boxes(inv);
+					look(p, Vec3d.ofCenter(box).add(Vec3d.of(boxFace.getVector()).multiply(0.5)));
+					client.interactionManager.attackBlock(box, boxFace);
+				} else {
+					look(p, Vec3d.ofCenter(box).add(Vec3d.of(boxFace.getVector()).multiply(0.5)));
+					client.interactionManager.updateBlockBreakingProgress(box, boxFace);
+				}
+				p.swingHand(Hand.MAIN_HAND);
+			}
+			case 16 -> {
+				// Pick it up: walk onto it until it's back in the inventory.
+				status = Text.literal("Picking up the shulker box");
+				if (boxes(inv) > boxHeld) {
+					log("box back after {} ticks", boxTicks);
+					box = null;
+					walker.clear(client);
+					depositStage = 0;
+					state = State.RUN;
+					return;
+				}
+				BlockPos at = box;
+				ItemEntity item = w.getEntitiesByClass(ItemEntity.class, new Box(at).expand(6), e -> e.isAlive() && isBox(e.getStack()))
+						.stream().min(java.util.Comparator.comparingDouble(e -> e.squaredDistanceTo(Vec3d.ofCenter(at)))).orElse(null);
+				if (item == null) {
+					if (boxTicks > 100) {
+						chat(p, Text.literal("Lost sight of the shulker box from " + at.toShortString() + ": pick it up yourself if it's lying there.").formatted(Formatting.RED));
+						box = null;
+						depositStage = 0;
+						state = State.RUN;
+					}
+					return;
+				}
+				boxTicks = Math.min(boxTicks, 50);
+				BlockPos ip = item.getBlockPos();
+				if (!walker.moving() || walker.arrived()) {
+					if (!walker.plan(w, p, q -> q.getX() == ip.getX() && q.getZ() == ip.getZ() && Math.abs(q.getY() - ip.getY()) <= 1, bounds(p))) {
+						// Can't stand on it: get as close as can be, the pick-up reach does the rest.
+						walker.plan(w, p, q -> Math.abs(q.getX() - ip.getX()) <= 1 && Math.abs(q.getZ() - ip.getZ()) <= 1 && Math.abs(q.getY() - ip.getY()) <= 1, bounds(p));
+					}
+				}
+				walker.tick(client);
+			}
+			default -> {
+			}
+		}
+	}
+
+	private static void giveUpBox(ClientPlayerEntity p, String why) {
+		boxWarned = true;
+		box = null;
+		depositStage = 0;
+		state = State.RUN;
+		chat(p, Text.literal(why + " Still harvesting; drops stay on the ground.").formatted(Formatting.GOLD));
 	}
 
 	private static boolean containerHasRoom(ScreenHandler h, ClientPlayerEntity p) {
@@ -643,6 +952,8 @@ final class Harvester {
 	private static void closeChest(MinecraftClient client) {
 		ClientPlayerEntity p = client.player;
 		if (state == State.DEPOSIT && p != null && p.currentScreenHandler != p.playerScreenHandler) p.closeHandledScreen();
+		if (client.interactionManager != null && box != null) client.interactionManager.cancelBlockBreaking();
+		// A box that's out stays the job (tick goes back for it); anything else is dropped.
 		if (state == State.DEPOSIT) state = State.RUN;
 	}
 
@@ -824,6 +1135,24 @@ final class Harvester {
 		int n = 0;
 		for (BlockPos c : farm.cells) if (Farm.mature(w.getBlockState(c))) n++;
 		return n;
+	}
+
+	static void say(MinecraftClient client, String s) {
+		if (client.player != null) chat(client.player, Text.literal(s).formatted(Formatting.GRAY));
+	}
+
+	static void chestAdded(MinecraftClient client, BlockPos c, String msg) {
+		if (running() && farm != null) {
+			farm.chests.add(c);
+			fullChests.remove(c);
+			fullWarned = false;
+		}
+		say(client, msg);
+	}
+
+	static void chestRemoved(MinecraftClient client, BlockPos c) {
+		if (farm != null) farm.chests.remove(c);
+		say(client, "Harvest Hand won't use this chest any more.");
 	}
 
 	static void chat(ClientPlayerEntity p, Text t) {

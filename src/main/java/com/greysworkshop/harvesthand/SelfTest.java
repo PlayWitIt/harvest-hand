@@ -48,6 +48,8 @@ final class SelfTest {
 	private static final String WORLD = "harvesthand-selftest";
 	private static final int R = 15, Y = -60;
 	private static final BlockPos CHEST = new BlockPos(R, Y, R);
+	/** A chest that was just there (the server put it down, not you): never used. */
+	private static final BlockPos OTHER = new BlockPos(-R, Y, R);
 	private static boolean started;
 	private static int tick = -1, phaseStart, passed, failed;
 	private static String phase = "setup";
@@ -108,6 +110,21 @@ final class SelfTest {
 
 	private static void tick(MinecraftClient client) {
 		if (client.player == null || client.world == null || client.getServer() == null) return;
+		// The game menu (the window losing focus on this desktop) pauses the whole world: shut it, and a lone-crop
+		// trial it interrupted doesn't count.
+		if (client.currentScreen instanceof net.minecraft.client.gui.screen.GameMenuScreen) {
+			client.setScreen(null);
+			log("game menu opened by itself: closed" + (trial != null ? ", trial at " + trial.toShortString() + " not counted" : ""));
+			if (trial != null) {
+				BlockPos t = trial;
+				server(client, srv -> {
+					if (srv.getOverworld().getBlockState(t).isOf(Blocks.CARROTS)) srv.getOverworld().setBlockState(t, Blocks.CARROTS.getDefaultState(), 3);
+					return 0;
+				});
+				trial = null;
+			}
+			return;
+		}
 		tick++;
 		int since = tick - phaseStart;
 		PlayerInventory inv = client.player.getInventory();
@@ -122,14 +139,33 @@ final class SelfTest {
 					command(client, "item replace entity @p hotbar.0 with minecraft:carrot 10");
 					command(client, "item replace entity @p inventory.4 with minecraft:wheat_seeds 3");
 					command(client, "item replace entity @p hotbar.8 with minecraft:bread 16");
+					command(client, "tp @p " + (R - 1.5) + " " + Y + " " + (R - 1.5));
+					command(client, "item replace entity @p hotbar.7 with minecraft:chest");
+				}
+				// You put the chest down yourself, the way a player does: that's the one it may use.
+				if (tick == 165) {
+					inv.setSelectedSlot(7);
+					net.minecraft.util.math.Vec3d top = net.minecraft.util.math.Vec3d.ofCenter(CHEST.down()).add(0, 0.5, 0);
+					Harvester.look(client.player, top);
+					client.interactionManager.interactBlock(client.player, net.minecraft.util.Hand.MAIN_HAND,
+							new net.minecraft.util.hit.BlockHitResult(top, net.minecraft.util.math.Direction.UP, CHEST.down(), false));
+				}
+				if (tick == 185) {
+					inv.setSelectedSlot(0);
+					command(client, "tp @p 0.5 " + Y + " 2.5");
 				}
 				if (tick == 200) {
 					Harvester.start(client, HhConfig.INSTANCE.radius);
 					Farm f = Harvester.farm;
-					int expected = 31 * 31 - 2;
+					int expected = 31 * 31 - 3;
 					check("found the farm: " + (f == null ? 0 : f.cells.size()) + " plots (expected " + expected + ")", f != null && f.cells.size() == expected);
 					check("nothing from outside the wall", f != null && f.cells.stream().allMatch(c -> Math.abs(c.getX()) <= R && Math.abs(c.getZ()) <= R));
-					check("found the chest (" + (f == null ? "" : f.chests) + ")", f != null && f.chests.contains(CHEST));
+					check("uses the chest you placed, not the one that was just there (" + (f == null ? "" : f.chests) + ")",
+							f != null && f.chests.contains(CHEST) && !f.chests.contains(OTHER) && server(client, s -> s.getOverworld().getBlockState(CHEST).isOf(Blocks.CHEST) ? 1 : 0) == 1);
+					Chests.toggle(client, OTHER);
+					boolean on = f != null && f.chests.contains(OTHER);
+					Chests.toggle(client, OTHER);
+					check("/hh chest marks and unmarks a chest", on && f != null && !f.chests.contains(OTHER) && Chests.mine(client).equals(java.util.Set.of(CHEST)));
 					check("main crop is carrots (" + (f == null ? "" : f.main) + ")", f != null && f.main == Blocks.CARROTS);
 					check("waits in the middle (" + (f == null ? "" : f.centre) + ")", f != null && f.centre != null && Math.abs(f.centre.getX()) <= 1 && Math.abs(f.centre.getZ()) <= 1);
 					int best = Harvester.bestTool(inv);
@@ -257,7 +293,7 @@ final class SelfTest {
 					log("rush: " + done + " harvested in 2 min, most ripe at once " + maxRipe + ", bare " + r[0] + ", farmland " + r[1] + ", drops " + r[2]);
 					double avg = (Harvester.waitTotal - rushWait) / (double) Math.max(1, Harvester.waitCount - rushCount) / 20;
 					check(String.format("kept up with the rush (%d harvested, %.1f s average wait, at most %d ripe at once)", done, avg, maxRipe), done > 100 && avg <= 15 && maxRipe <= 40);
-					check("no plot left bare (" + r[0] + ") and none trampled (" + r[1] + " of " + (31 * 31 - 2) + " farmland)", r[0] <= 3 && r[1] >= 31 * 31 - 2 - 2);
+					check("no plot left bare (" + r[0] + ") and none trampled (" + r[1] + " of " + (31 * 31 - 3) + " farmland)", r[0] <= 3 && r[1] >= 31 * 31 - 3 - 2);
 					check("walker rarely stuck (" + Walker.stuckCount + ")", Walker.stuckCount <= 3);
 					next("full");
 				}
@@ -281,6 +317,37 @@ final class SelfTest {
 					check("kept a stack of carrots to plant (" + count(inv, Items.CARROT) + ") and the hoe", count(inv, Items.CARROT) > 0 && inv.getStack(2).isOf(Items.DIAMOND_HOE));
 					check("back to farming (" + Harvester.state + ", screen " + client.currentScreen + ")", Harvester.state == Harvester.State.RUN && client.currentScreen == null);
 					command(client, "clear @p minecraft:cobblestone");
+					next("box");
+				}
+			}
+			// No chest to use: an empty shulker box goes against the wall, is filled, broken and picked back up.
+			case "box" -> {
+				if (since == 1) {
+					Chests.toggle(client, CHEST);
+					command(client, "item replace entity @p inventory.20 with minecraft:shulker_box");
+					command(client, "item replace entity @p inventory.21 with minecraft:blue_shulker_box");
+					command(client, "give @p minecraft:carrot 192");
+					command(client, "give @p minecraft:wheat 128");
+				}
+				if (since == 10) {
+					for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+						if (inv.getStack(i).isEmpty()) command(client, "item replace entity @p " + (i < 9 ? "hotbar." + i : "inventory." + (i - 9)) + " with minecraft:cobblestone 64");
+					}
+					mark = Harvester.deposited;
+				}
+				if (since > 20 && since % 20 == 0) log("box: " + Harvester.status.getString() + " · " + Harvester.state + " · box " + Harvester.box);
+				boolean back = since > 60 && Harvester.box == null && Harvester.state == Harvester.State.RUN && Harvester.boxes(inv) == 2 && filledBoxes(inv) == 1;
+				if (back || since == 20 * 45) {
+					int placed = server(client, s -> shulkersOut(s.getOverworld()));
+					check("full inventory went into a shulker box (" + (Harvester.deposited - mark) + " items, " + filledBoxes(inv) + " filled, after " + since / 20 + " s)",
+							Harvester.deposited - mark > 300 && filledBoxes(inv) == 1);
+					check("both shulker boxes back in the inventory, none left out (" + Harvester.boxes(inv) + " held, " + placed + " placed)", Harvester.boxes(inv) == 2 && placed == 0);
+					check("the chest that was just there never touched (" + server(client, s -> chestCount(s.getOverworld(), OTHER)) + " items)",
+							server(client, s -> chestCount(s.getOverworld(), OTHER)) == 0);
+					check("back to farming, carrots kept (" + Harvester.state + ", " + count(inv, Items.CARROT) + ")", Harvester.state == Harvester.State.RUN && count(inv, Items.CARROT) > 0);
+					command(client, "clear @p minecraft:cobblestone");
+					command(client, "clear @p minecraft:shulker_box");
+					command(client, "clear @p minecraft:blue_shulker_box");
 					next("hand");
 				}
 			}
@@ -368,9 +435,12 @@ final class SelfTest {
 					w.setBlockState(soil.up(), crop.getDefaultState().with(CropBlock.AGE, age), Block.NOTIFY_LISTENERS);
 				}
 			}
-			// The chest in a corner, on stone.
+			// Stone in a corner for you to put your chest on, and a chest in another corner that you didn't place.
+			w.setBlockState(CHEST, Blocks.AIR.getDefaultState(), 3);
 			w.setBlockState(CHEST.down(), Blocks.STONE.getDefaultState(), 3);
-			w.setBlockState(CHEST, Blocks.CHEST.getDefaultState(), 3);
+			w.setBlockState(OTHER, Blocks.AIR.getDefaultState(), 3);
+			w.setBlockState(OTHER.down(), Blocks.STONE.getDefaultState(), 3);
+			w.setBlockState(OTHER, Blocks.CHEST.getDefaultState(), 3);
 			// Torches on the wall, and someone else's farmland just outside it.
 			for (int x = 20; x <= 22; x++) for (int z = -1; z <= 1; z++) {
 				w.setBlockState(new BlockPos(x, Y - 1, z), Blocks.FARMLAND.getDefaultState(), 3);
@@ -383,7 +453,7 @@ final class SelfTest {
 	// ---------------------------------------------------------------- server-side checks
 
 	private static boolean inside(BlockPos c) {
-		return Math.abs(c.getX()) <= R && Math.abs(c.getZ()) <= R && !(c.getX() == 0 && c.getZ() == 0) && !(c.getX() == R && c.getZ() == R);
+		return Math.abs(c.getX()) <= R && Math.abs(c.getZ()) <= R && !(c.getX() == 0 && c.getZ() == 0) && !(c.getX() == R && c.getZ() == R) && !(c.getX() == -R && c.getZ() == R);
 	}
 
 	private static int ripe(ServerWorld w) {
@@ -432,9 +502,25 @@ final class SelfTest {
 	}
 
 	private static int chestCount(ServerWorld w) {
-		if (!(w.getBlockEntity(CHEST) instanceof ChestBlockEntity c)) return -1;
+		return chestCount(w, CHEST);
+	}
+
+	private static int chestCount(ServerWorld w, BlockPos at) {
+		if (!(w.getBlockEntity(at) instanceof ChestBlockEntity c)) return -1;
 		int n = 0;
 		for (int i = 0; i < c.size(); i++) n += c.getStack(i).getCount();
+		return n;
+	}
+
+	private static int filledBoxes(PlayerInventory inv) {
+		int n = 0;
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (Harvester.isBox(inv.getStack(i)) && !Harvester.emptyBox(inv.getStack(i))) n++;
+		return n;
+	}
+
+	private static int shulkersOut(ServerWorld w) {
+		int n = 0;
+		for (BlockPos q : BlockPos.iterate(-R - 2, Y - 2, -R - 2, R + 2, Y + 4, R + 2)) if (w.getBlockState(q).getBlock() instanceof net.minecraft.block.ShulkerBoxBlock) n++;
 		return n;
 	}
 

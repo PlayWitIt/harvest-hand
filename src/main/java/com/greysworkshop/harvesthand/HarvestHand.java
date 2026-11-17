@@ -33,6 +33,7 @@ public final class HarvestHand implements ClientModInitializer {
 		startKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.harvesthand.start", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_KP_4, category));
 		pauseKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.harvesthand.pause", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_KP_5, category));
 		stopKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.harvesthand.stop", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_KP_6, category));
+		Chests.init();
 		ClientTickEvents.END_CLIENT_TICK.register(HarvestHand::tick);
 		HudElementRegistry.addLast(Identifier.of(MOD_ID, "hud"), Hud::render);
 		ClientCommandRegistrationCallback.EVENT.register((d, access) -> {
@@ -41,7 +42,7 @@ public final class HarvestHand implements ClientModInitializer {
 						.executes(c -> {
 							MinecraftClient client = MinecraftClient.getInstance();
 							if (client.player != null) Harvester.chat(client.player, Text.literal(Harvester.running() ? Hud.lines(client).stream().map(Text::getString).reduce((a, b) -> a + " · " + b).orElse("")
-									: "/hh start [radius] while standing in your farm (Numpad 4), /hh pause (Numpad 5), /hh stop (Numpad 6), /hh perTick <1-4>, /hh radius <8-128>.").formatted(Formatting.GRAY));
+									: "/hh start [radius] while standing in your farm (Numpad 4), /hh pause (Numpad 5), /hh stop (Numpad 6), /hh chest (the chest you look at), /hh perTick <1-4>, /hh radius <4-128>.").formatted(Formatting.GRAY));
 							return 1;
 						})
 						.then(literal("start").executes(c -> run(client -> Harvester.startOrResume(client)))
@@ -49,6 +50,7 @@ public final class HarvestHand implements ClientModInitializer {
 									int r = IntegerArgumentType.getInteger(c, "radius");
 									return run(client -> Harvester.start(client, r));
 								})))
+						.then(literal("chest").executes(c -> run(Chests::toggleLooked)))
 						.then(literal("pause").executes(c -> run(Harvester::togglePause)))
 						.then(literal("stop").executes(c -> run(client -> Harvester.stop(client, "Stopped."))))
 						.then(literal("radius").then(argument("blocks", IntegerArgumentType.integer(4, 128)).executes(c -> {
@@ -89,6 +91,7 @@ public final class HarvestHand implements ClientModInitializer {
 		while (startKey.wasPressed()) if (client.currentScreen == null) Harvester.startOrResume(client);
 		while (pauseKey.wasPressed()) if (client.currentScreen == null) Harvester.togglePause(client);
 		while (stopKey.wasPressed()) if (client.currentScreen == null) Harvester.stop(client, "Stopped.");
+		Chests.tick(client);
 		Harvester.tick(client);
 	}
 }

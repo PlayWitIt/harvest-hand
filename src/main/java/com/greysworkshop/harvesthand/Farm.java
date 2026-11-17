@@ -85,7 +85,7 @@ final class Farm {
 	}
 
 	/** Walks the ground from {@code start} up to {@code radius} blocks out. */
-	static Farm scan(ClientWorld w, BlockPos start, int radius) {
+	static Farm scan(ClientWorld w, BlockPos start, int radius, Set<BlockPos> mine) {
 		Farm f = new Farm();
 		Set<BlockPos> seen = new HashSet<>();
 		Set<BlockPos> cellSet = new HashSet<>();
@@ -102,7 +102,8 @@ final class Farm {
 				for (int dy = -1; dy <= 1; dy++) {
 					BlockPos side = n.offset(d).up(dy);
 					Block b = w.getBlockState(side).getBlock();
-					if (b instanceof ChestBlock || b instanceof BarrelBlock) f.chests.add(side.toImmutable());
+					// Only your own chests: never one it just happens to find.
+					if ((b instanceof ChestBlock || b instanceof BarrelBlock) && mine.contains(side)) f.chests.add(side.toImmutable());
 				}
 				for (int dy = 1; dy >= -3; dy--) {
 					BlockPos next = n.offset(d).up(dy);

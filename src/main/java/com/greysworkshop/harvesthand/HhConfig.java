@@ -36,6 +36,8 @@ final class HhConfig {
 	boolean protectTools = true;
 	int toolReserve = 10;
 	boolean hud = true;
+	/** Chests you placed or marked ({@code /hh chest}), as "server|dimension|x,y,z": the only ones it stores in. */
+	java.util.List<String> chests = new java.util.ArrayList<>();
 	long totalHarvested;
 
 	static void load() {
@@ -48,6 +50,7 @@ final class HhConfig {
 			HarvestHand.LOGGER.warn("Could not read {}", file, e);
 		}
 		HhConfig c = INSTANCE;
+		if (c.chests == null) c.chests = new java.util.ArrayList<>();
 		c.radius = Math.max(4, Math.min(128, c.radius));
 		c.perTick = Math.max(1, Math.min(4, c.perTick));
 		c.minHealth = Math.max(0, Math.min(19, c.minHealth));
