@@ -371,7 +371,7 @@ final class Harvester {
 
 	/**
 	 * Picks where to go next: the lowest score. A ripe crop scores its distance, less a block for every second it has
-	 * waited (so no corner is left out). A drop scores its distance plus 4, less a block for every 10 seconds on the
+	 * waited, up to 15 (so no corner is left out, without zigzagging across the farm for it). A drop scores its distance plus 4, less a block for every 10 seconds on the
 	 * ground (items despawn after 5 minutes); a seed you've run out of while plots wait for it comes first of all.
 	 */
 	private static boolean choose(ClientWorld w, ClientPlayerEntity p) {
@@ -408,7 +408,7 @@ final class Harvester {
 
 	private static double cropScore(BlockPos c, double d) {
 		Integer since = ripeSince.get(c);
-		return d - (since == null ? 0 : Math.min(60, (ticks - since) / 20.0));
+		return d - (since == null ? 0 : Math.min(15, (ticks - since) / 20.0));
 	}
 
 	private static double dropScore(ItemEntity e, double d, java.util.Set<Item> missing) {
