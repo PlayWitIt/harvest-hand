@@ -1,0 +1,19 @@
+{
+	"schemaVersion": 1,
+	"id": "harvesthand",
+	"version": "${version}",
+	"name": "Harvest Hand",
+	"description": "Stand in your walled farm and press Numpad 4: every carrot, potato, wheat, beetroot and nether wart is harvested the moment it's fully grown and replanted straight away, with your best Fortune tool (by hand if you have none). It walks to ripe crops and drops, waits in the middle, and puts the harvest in a chest at the edge when your inventory fills. Client-side only.",
+	"authors": ["PlayWit Creations"],
+	"license": "MIT",
+	"environment": "client",
+	"entrypoints": {
+		"client": ["com.greysworkshop.harvesthand.HarvestHand"]
+	},
+	"depends": {
+		"fabricloader": ">=0.18.0",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}

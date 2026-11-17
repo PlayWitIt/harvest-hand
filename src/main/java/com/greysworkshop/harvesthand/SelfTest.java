@@ -1,0 +1,510 @@
+package com.greysworkshop.harvesthand;
+
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.minecraft.block.Block;
+import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
+import net.minecraft.block.CropBlock;
+import net.minecraft.block.FarmlandBlock;
+import net.minecraft.block.entity.ChestBlockEntity;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.TitleScreen;
+import net.minecraft.client.util.ScreenshotRecorder;
+import net.minecraft.entity.ItemEntity;
+import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.resource.DataConfiguration;
+import net.minecraft.resource.featuretoggle.FeatureFlags;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
+import net.minecraft.world.Difficulty;
+import net.minecraft.world.GameMode;
+import net.minecraft.world.gen.GeneratorOptions;
+import net.minecraft.world.gen.WorldPresets;
+import net.minecraft.world.level.LevelInfo;
+import net.minecraft.world.rule.GameRules;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.function.Function;
+import java.util.stream.Stream;
+
+/**
+ * Development-only, {@code ./gradlew runSelfTest}. A 31 × 31 walled farm on a superflat world, a water source in the
+ * middle, carrots with a strip of wheat, an empty patch, a chest in a corner and farmland outside the wall. Survival,
+ * with a Fortune III hoe and a worn one. Checks it finds the farm, clears what's ripe, keeps up when crops ripen one at
+ * a time and in a rush, stores a full inventory, harvests by hand without a usable tool, and pauses and stops.
+ */
+final class SelfTest {
+	private static final String WORLD = "harvesthand-selftest";
+	private static final int R = 15, Y = -60;
+	private static final BlockPos CHEST = new BlockPos(R, Y, R);
+	private static boolean started;
+	private static int tick = -1, phaseStart, passed, failed;
+	private static String phase = "setup";
+	private static final java.util.Random RNG = new java.util.Random(7);
+	private static final List<Integer> waits = new ArrayList<>();
+	private static BlockPos trial;
+	private static int trialStart, mark, maxRipe, rushCount;
+	private static long rushWait;
+	private static List<BlockPos> carrotCells = new ArrayList<>();
+	private static final List<BlockPos> ripened = new ArrayList<>();
+
+	private SelfTest() {}
+
+	static void start() {
+		log("Self-test armed");
+		ScreenEvents.AFTER_INIT.register((client, screen, w, h) -> {
+			if (!started && screen instanceof net.minecraft.client.gui.screen.AccessibilityOnboardingScreen) {
+				client.options.onboardAccessibility = false;
+				client.send(() -> client.setScreen(new TitleScreen()));
+				return;
+			}
+			if (started || !(screen instanceof TitleScreen)) return;
+			started = true;
+			client.send(() -> openWorld(client));
+		});
+		ClientTickEvents.END_CLIENT_TICK.register(SelfTest::tick);
+	}
+
+	private static void openWorld(MinecraftClient client) {
+		client.options.pauseOnLostFocus = false;
+		deleteTree(client.runDirectory.toPath().resolve("saves").resolve(WORLD));
+		try {
+			HhConfig.useFile(Files.createTempDirectory("harvesthand").resolve("harvesthand.json"));
+		} catch (IOException e) {
+			throw new RuntimeException(e);
+		}
+		LevelInfo info = new LevelInfo(WORLD, GameMode.SURVIVAL, false, Difficulty.PEACEFUL, true,
+				new GameRules(FeatureFlags.DEFAULT_ENABLED_FEATURES), DataConfiguration.SAFE_MODE);
+		client.createIntegratedServerLoader().createAndStart(WORLD, info, GeneratorOptions.createTestWorld(),
+				WorldPresets::createTestOptions, new TitleScreen());
+	}
+
+	private static void deleteTree(Path dir) {
+		try (Stream<Path> files = Files.exists(dir) ? Files.walk(dir) : Stream.empty()) {
+			files.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+		} catch (IOException e) {
+			log("Could not clear " + dir + ": " + e);
+		}
+	}
+
+	private static boolean wheatRow(int z) {
+		return z >= -R && z <= -R + 2;
+	}
+
+	private static boolean emptyPatch(int x, int z) {
+		return x >= 5 && x <= 7 && z >= 5 && z <= 7;
+	}
+
+	private static void tick(MinecraftClient client) {
+		if (client.player == null || client.world == null || client.getServer() == null) return;
+		tick++;
+		int since = tick - phaseStart;
+		PlayerInventory inv = client.player.getInventory();
+		switch (phase) {
+			case "setup" -> {
+				if (tick == 20) build(client);
+				if (tick == 140) {
+					command(client, "tp @p 0.5 " + Y + " 2.5");
+					command(client, "item replace entity @p hotbar.2 with minecraft:diamond_hoe[minecraft:enchantments={\"minecraft:fortune\":3}]");
+					// Fortune III too, but down to its last 10 uses: the tool guard keeps it aside.
+					command(client, "item replace entity @p hotbar.5 with minecraft:netherite_hoe[minecraft:enchantments={\"minecraft:fortune\":3},minecraft:damage=2021]");
+					command(client, "item replace entity @p hotbar.0 with minecraft:carrot 10");
+					command(client, "item replace entity @p inventory.4 with minecraft:wheat_seeds 3");
+					command(client, "item replace entity @p hotbar.8 with minecraft:bread 16");
+				}
+				if (tick == 200) {
+					Harvester.start(client, HhConfig.INSTANCE.radius);
+					Farm f = Harvester.farm;
+					int expected = 31 * 31 - 2;
+					check("found the farm: " + (f == null ? 0 : f.cells.size()) + " plots (expected " + expected + ")", f != null && f.cells.size() == expected);
+					check("nothing from outside the wall", f != null && f.cells.stream().allMatch(c -> Math.abs(c.getX()) <= R && Math.abs(c.getZ()) <= R));
+					check("found the chest (" + (f == null ? "" : f.chests) + ")", f != null && f.chests.contains(CHEST));
+					check("main crop is carrots (" + (f == null ? "" : f.main) + ")", f != null && f.main == Blocks.CARROTS);
+					check("waits in the middle (" + (f == null ? "" : f.centre) + ")", f != null && f.centre != null && Math.abs(f.centre.getX()) <= 1 && Math.abs(f.centre.getZ()) <= 1);
+					int best = Harvester.bestTool(inv);
+					check("picks the Fortune III diamond hoe, not the worn netherite one (slot " + best + ")", best == 2);
+					check("running", Harvester.running());
+					carrotCells = f.cells.stream().filter(c -> !wheatRow(c.getZ()) && !emptyPatch(c.getX(), c.getZ())).toList();
+					mark = server(client, s -> ripe(s.getOverworld()));
+					log("ripe at start: " + mark);
+					next("clear");
+				}
+			}
+			case "clear" -> {
+				if (since % 100 == 0) log("clear: " + Harvester.status.getString() + " · " + Harvester.summary() + " · ripe " + Harvester.ripe(client.world)
+						+ (Harvester.ripe(client.world) < 15 ? " at " + Harvester.farm.cells.stream().filter(c -> Farm.mature(client.world.getBlockState(c))).map(BlockPos::toShortString).toList()
+						+ " me " + client.player.getBlockPos().toShortString() : ""));
+				int[] r = since % 10 == 0 ? server(client, s -> new int[] {ripe(s.getOverworld()), bare(s.getOverworld())}, null) : null;
+				if (r != null && r[0] == 0 && r[1] == 0) {
+					log("cleared in " + since + " ticks (" + since / 20 + " s): " + Harvester.summary());
+					check("every ripe crop harvested (" + Harvester.harvested + " of " + mark + ")", Harvester.harvested >= mark);
+					check("all replanted, empty patch planted (" + Harvester.replanted + " replanted at once, " + Harvester.planted + " planted)",
+							Harvester.replanted + Harvester.planted >= Harvester.harvested + 9 && Harvester.planted >= 9);
+					check("every harvest with Fortune (" + Harvester.fortuneHarvests + " of " + Harvester.harvested + ")", Harvester.fortuneHarvests == Harvester.harvested);
+					int[] k = server(client, s -> kinds(s.getOverworld()), null);
+					check("the wheat strip is still wheat and the rest carrots (" + k[0] + " wheat wrong, " + k[1] + " carrots wrong)", k[0] == 0 && k[1] == 0);
+					check("worn netherite hoe untouched (" + inv.getStack(5).getDamage() + ")", inv.getStack(5).getDamage() == 2021);
+					screenshot(client, "1_cleared");
+					next("pickup");
+				} else if (since > 20 * 120) fail(client, "didn't clear the ripe crops in 2 minutes: " + Harvester.summary());
+			}
+			case "pickup" -> {
+				int left = since % 20 == 0 ? server(client, s -> drops(s.getOverworld())) : -1;
+				if (mark >= 0 && (left >= 0 && left <= 3 || since >= 20 * 60)) {
+					if (left < 0) left = server(client, s -> drops(s.getOverworld()));
+					if (left > 3) log("drops left at " + server(client, s -> { s.getOverworld().getEntitiesByClass(ItemEntity.class, new Box(-R, Y - 2, -R, R + 1, Y + 3, R + 1), e -> true)
+							.forEach(e -> log("  " + e.getBlockPos().toShortString() + " " + e.getStack() + " age " + e.getItemAge())); return 0; }));
+					// Crops keep ripening all the while, and come first; but no drop is left lying for more than a minute or so.
+					int oldest = server(client, s -> s.getOverworld().getEntitiesByClass(ItemEntity.class, new Box(-R, Y - 2, -R, R + 1, Y + 3, R + 1), e -> true)
+							.stream().mapToInt(ItemEntity::getItemAge).max().orElse(0));
+					check("drops picked up while crops keep ripening (" + left + " on the ground after " + since / 20 + " s, oldest " + oldest / 20 + " s), carrots now " + count(inv, Items.CARROT),
+							(left <= 3 || oldest <= 20 * 90) && count(inv, Items.CARROT) > 10);
+					mark = -1;
+					phaseStart = tick - 201;
+					since = 201;
+					// Trampled farmland where carrots grew: it tills it again and replants.
+					server(client, s -> {
+						ServerWorld w = s.getOverworld();
+						for (BlockPos c : new BlockPos[] {new BlockPos(-10, Y, 10), new BlockPos(10, Y, -8)}) {
+							w.setBlockState(c, Blocks.AIR.getDefaultState(), 3);
+							w.setBlockState(c.down(), Blocks.DIRT.getDefaultState(), 3);
+						}
+						return 0;
+					});
+					command(client, "give @p minecraft:wooden_hoe");
+				}
+				if (mark == -1 && since == 600) {
+					boolean ok = server(client, s -> {
+						ServerWorld w = s.getOverworld();
+						int n = 0;
+						for (BlockPos c : new BlockPos[] {new BlockPos(-10, Y, 10), new BlockPos(10, Y, -8)}) {
+							if (w.getBlockState(c.down()).isOf(Blocks.FARMLAND) && w.getBlockState(c).isOf(Blocks.CARROTS)) n++;
+						}
+						return n;
+					}) == 2;
+					check("trampled farmland tilled and replanted (" + Harvester.tilled + " tilled)", ok && Harvester.tilled >= 2);
+					next("single");
+				}
+			}
+			// One crop ripens at a time, anywhere in the farm: how long until it's harvested and replanted?
+			case "single" -> {
+				if (trial == null && since % 50 == 0 && waits.size() < 30) {
+					trial = carrotCells.get(RNG.nextInt(carrotCells.size()));
+					BlockPos t = trial;
+					server(client, s -> {
+						s.getOverworld().setBlockState(t, Blocks.CARROTS.getDefaultState().with(CropBlock.AGE, 7), 3);
+						return 0;
+					});
+					trialStart = tick;
+					log(String.format("trial at %s, %.1f blocks off, %s", t.toShortString(), Math.sqrt(client.player.getEntityPos().squaredDistanceTo(t.toCenterPos())), Harvester.status.getString()));
+				} else if (trial != null) {
+					BlockPos t = trial;
+					int age = server(client, s -> {
+						BlockState st = s.getOverworld().getBlockState(t);
+						return st.isOf(Blocks.CARROTS) ? st.get(CropBlock.AGE) : -1;
+					});
+					if (age >= 0 && age < 7) {
+						waits.add(tick - trialStart);
+						log("  done in " + (tick - trialStart) + " ticks");
+						trial = null;
+					} else if (tick - trialStart > 20 * 20) {
+						waits.add(tick - trialStart);
+						log("trial at " + t.toShortString() + " not done in 20 s (age " + age + ")");
+						trial = null;
+					}
+				}
+				if (waits.size() >= 30 && trial == null) {
+					List<Integer> sorted = waits.stream().sorted().toList();
+					double avg = waits.stream().mapToInt(Integer::intValue).average().orElse(0) / 20;
+					log("single crops: waits (ticks) " + sorted);
+					check(String.format("a lone ripe crop anywhere is replanted in %.1f s on average (median %.2f s, worst %.1f s)", avg,
+							sorted.get(sorted.size() / 2) / 20.0, sorted.get(sorted.size() - 1) / 20.0), avg <= 4.0 && sorted.get(sorted.size() - 1) <= 20 * 10);
+					next("rush");
+					command(client, "gamerule random_tick_speed 40");
+					command(client, "gamerule randomTickSpeed 40");
+					mark = Harvester.harvested;
+					maxRipe = 0;
+					rushWait = Harvester.waitTotal;
+					rushCount = Harvester.waitCount;
+				}
+			}
+			// Random ticks 13x: crops ripen all over the farm. It has to keep up for two minutes.
+			case "rush" -> {
+				if (since % 20 == 0) {
+					int ripe = server(client, s -> ripe(s.getOverworld()));
+					if (since > 400) maxRipe = Math.max(maxRipe, ripe);
+					if (since % 200 == 0) log("rush " + since / 20 + " s: " + ripe + " ripe · " + Harvester.summary() + " · " + Harvester.status.getString()
+							+ String.format(" · avg wait %.1f s", Harvester.waitTotal / (double) Math.max(1, Harvester.waitCount) / 20));
+				}
+				if (since == 1200) screenshot(client, "2_rush");
+				if (since == 20 * 120) {
+					command(client, "gamerule random_tick_speed 3");
+					command(client, "gamerule randomTickSpeed 3");
+					int done = Harvester.harvested - mark;
+					int[] r = server(client, s -> new int[] {bare(s.getOverworld()), farmland(s.getOverworld()), drops(s.getOverworld())}, null);
+					log("rush: " + done + " harvested in 2 min, most ripe at once " + maxRipe + ", bare " + r[0] + ", farmland " + r[1] + ", drops " + r[2]);
+					double avg = (Harvester.waitTotal - rushWait) / (double) Math.max(1, Harvester.waitCount - rushCount) / 20;
+					check(String.format("kept up with the rush (%d harvested, %.1f s average wait, at most %d ripe at once)", done, avg, maxRipe), done > 100 && avg <= 15 && maxRipe <= 40);
+					check("no plot left bare (" + r[0] + ") and none trampled (" + r[1] + " of " + (31 * 31 - 2) + " farmland)", r[0] <= 3 && r[1] >= 31 * 31 - 2 - 2);
+					check("walker rarely stuck (" + Walker.stuckCount + ")", Walker.stuckCount <= 3);
+					next("full");
+				}
+			}
+			// Inventory full: the harvest goes into the chest, one stack of each seed is kept.
+			case "full" -> {
+				if (since == 1) {
+					command(client, "give @p minecraft:carrot 192");
+					command(client, "give @p minecraft:wheat 128");
+				}
+				if (since == 10) {
+					for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+						if (inv.getStack(i).isEmpty()) command(client, "item replace entity @p " + (i < 9 ? "hotbar." + i : "inventory." + (i - 9)) + " with minecraft:cobblestone 64");
+					}
+					mark = server(client, s -> chestCount(s.getOverworld()));
+				}
+				if (since > 20 && Harvester.state == Harvester.State.DEPOSIT && since % 10 == 0) log("depositing: " + Harvester.status.getString());
+				if (since == 20 * 30) {
+					int inChest = server(client, s -> chestCount(s.getOverworld()));
+					check("full inventory stored in the chest (" + inChest + " items, " + Harvester.deposited + " counted)", inChest > 300 && Harvester.deposited > 300);
+					check("kept a stack of carrots to plant (" + count(inv, Items.CARROT) + ") and the hoe", count(inv, Items.CARROT) > 0 && inv.getStack(2).isOf(Items.DIAMOND_HOE));
+					check("back to farming (" + Harvester.state + ", screen " + client.currentScreen + ")", Harvester.state == Harvester.State.RUN && client.currentScreen == null);
+					command(client, "clear @p minecraft:cobblestone");
+					next("hand");
+				}
+			}
+			// No usable tool: the good hoe is gone, the worn one is kept aside. It goes on by hand.
+			case "hand" -> {
+				if (since == 1) command(client, "clear @p minecraft:diamond_hoe");
+				if (since == 10) {
+					check("no usable Fortune tool now (" + Harvester.bestTool(inv) + "): " + Harvester.toolNote(inv),
+							Harvester.bestTool(inv) < 0 && Harvester.toolNote(inv).contains("put aside"));
+					mark = Harvester.harvested;
+					ripen(client, 6);
+				}
+				int notDone = since > 10 && since % 20 == 0 ? server(client, s -> (int) ripened.stream().filter(c -> !s.getOverworld().getBlockState(c).isOf(Blocks.CARROTS)
+						|| s.getOverworld().getBlockState(c).get(CropBlock.AGE) == 7).count()) : -1;
+				if (notDone == 0 || since == 20 * 40) {
+					int ripe = server(client, s -> (int) ripened.stream().filter(c -> !s.getOverworld().getBlockState(c).isOf(Blocks.CARROTS)
+							|| s.getOverworld().getBlockState(c).get(CropBlock.AGE) == 7).count());
+					check("harvested by hand and replanted (" + (Harvester.harvested - mark) + " harvested, last with " + Harvester.toolName + ", " + ripe + " of the 6 not done after " + since / 20 + " s)",
+							Harvester.harvested - mark >= 6 && Harvester.lastFortune == 0 && ripe == 0);
+					check("worn netherite hoe still never used (" + inv.getStack(5).getDamage() + ")", inv.getStack(5).isOf(Items.NETHERITE_HOE) && inv.getStack(5).getDamage() == 2021);
+					next("pause");
+				}
+			}
+			case "pause" -> {
+				if (since == 1) Harvester.togglePause(client);
+				if (since == 5) {
+					mark = Harvester.harvested;
+					ripen(client, 4);
+				}
+				if (since == 100) {
+					check("paused: nothing harvested, keys up (" + (Harvester.harvested - mark) + ")", Harvester.paused && Harvester.harvested == mark && !client.options.forwardKey.isPressed());
+					Harvester.startOrResume(client);
+				}
+				if (since == 400) {
+					check("carries on after Numpad 4 (" + (Harvester.harvested - mark) + ")", !Harvester.paused && Harvester.harvested - mark >= 4);
+					screenshot(client, "3_hud");
+					Harvester.stop(client, "Stopped.");
+					check("stopped", !Harvester.running() && !client.options.forwardKey.isPressed());
+					finish(client);
+				}
+			}
+			default -> {}
+		}
+	}
+
+	private static void ripen(MinecraftClient client, int n) {
+		server(client, s -> {
+			List<BlockPos> shuffled = new ArrayList<>(carrotCells);
+			java.util.Collections.shuffle(shuffled, RNG);
+			ripened.clear();
+			for (int i = 0; i < n; i++) {
+				BlockPos c = shuffled.get(i);
+				ripened.add(c);
+				s.getOverworld().setBlockState(c, Blocks.CARROTS.getDefaultState().with(CropBlock.AGE, 7), 3);
+			}
+			return 0;
+		});
+	}
+
+	private static void build(MinecraftClient client) {
+		command(client, "gamerule doDaylightCycle false");
+		command(client, "gamerule advance_time false");
+		command(client, "time set 6000");
+		command(client, "gamerule doWeatherCycle false");
+		command(client, "gamerule advance_weather false");
+		command(client, "weather clear");
+		server(client, s -> {
+			ServerWorld w = s.getOverworld();
+			for (int x = -R - 1; x <= R + 1; x++) {
+				for (int z = -R - 1; z <= R + 1; z++) {
+					BlockPos soil = new BlockPos(x, Y - 1, z);
+					if (Math.abs(x) == R + 1 || Math.abs(z) == R + 1) {
+						for (int y = 0; y < 3; y++) w.setBlockState(new BlockPos(x, Y + y, z), Blocks.STONE_BRICKS.getDefaultState(), Block.NOTIFY_LISTENERS);
+						continue;
+					}
+					if (x == 0 && z == 0) {
+						w.setBlockState(soil, Blocks.WATER.getDefaultState(), 3);
+						continue;
+					}
+					w.setBlockState(soil, Blocks.FARMLAND.getDefaultState().with(FarmlandBlock.MOISTURE, 7), Block.NOTIFY_LISTENERS);
+					if (emptyPatch(x, z)) continue;
+					int h = Math.floorMod(x * 73 + z * 31 + x * z, 10);
+					Block crop = wheatRow(z) ? Blocks.WHEAT : Blocks.CARROTS;
+					int age = h < 3 ? 7 : h % 7;
+					w.setBlockState(soil.up(), crop.getDefaultState().with(CropBlock.AGE, age), Block.NOTIFY_LISTENERS);
+				}
+			}
+			// The chest in a corner, on stone.
+			w.setBlockState(CHEST.down(), Blocks.STONE.getDefaultState(), 3);
+			w.setBlockState(CHEST, Blocks.CHEST.getDefaultState(), 3);
+			// Torches on the wall, and someone else's farmland just outside it.
+			for (int x = 20; x <= 22; x++) for (int z = -1; z <= 1; z++) {
+				w.setBlockState(new BlockPos(x, Y - 1, z), Blocks.FARMLAND.getDefaultState(), 3);
+				w.setBlockState(new BlockPos(x, Y, z), Blocks.CARROTS.getDefaultState().with(CropBlock.AGE, 7), 3);
+			}
+			return 0;
+		});
+	}
+
+	// ---------------------------------------------------------------- server-side checks
+
+	private static boolean inside(BlockPos c) {
+		return Math.abs(c.getX()) <= R && Math.abs(c.getZ()) <= R && !(c.getX() == 0 && c.getZ() == 0) && !(c.getX() == R && c.getZ() == R);
+	}
+
+	private static int ripe(ServerWorld w) {
+		int n = 0;
+		for (int x = -R; x <= R; x++) for (int z = -R; z <= R; z++) {
+			BlockPos c = new BlockPos(x, Y, z);
+			if (inside(c) && Farm.mature(w.getBlockState(c))) n++;
+		}
+		return n;
+	}
+
+	/** Farmland inside with nothing growing on it. */
+	private static int bare(ServerWorld w) {
+		int n = 0;
+		for (int x = -R; x <= R; x++) for (int z = -R; z <= R; z++) {
+			BlockPos c = new BlockPos(x, Y, z);
+			if (inside(c) && w.getBlockState(c).isAir()) n++;
+		}
+		return n;
+	}
+
+	private static int farmland(ServerWorld w) {
+		int n = 0;
+		for (int x = -R; x <= R; x++) for (int z = -R; z <= R; z++) {
+			BlockPos c = new BlockPos(x, Y - 1, z);
+			if (inside(c.up()) && w.getBlockState(c).isOf(Blocks.FARMLAND)) n++;
+		}
+		return n;
+	}
+
+	/** {wheat cells that aren't wheat, other cells that aren't carrots}. */
+	private static int[] kinds(ServerWorld w) {
+		int[] r = new int[2];
+		for (int x = -R; x <= R; x++) for (int z = -R; z <= R; z++) {
+			BlockPos c = new BlockPos(x, Y, z);
+			if (!inside(c)) continue;
+			BlockState s = w.getBlockState(c);
+			if (wheatRow(z) && !s.isOf(Blocks.WHEAT)) r[0]++;
+			if (!wheatRow(z) && !s.isOf(Blocks.CARROTS)) r[1]++;
+		}
+		return r;
+	}
+
+	private static int drops(ServerWorld w) {
+		return w.getEntitiesByClass(ItemEntity.class, new Box(-R, Y - 2, -R, R + 1, Y + 3, R + 1), e -> true).stream().mapToInt(e -> e.getStack().getCount()).sum();
+	}
+
+	private static int chestCount(ServerWorld w) {
+		if (!(w.getBlockEntity(CHEST) instanceof ChestBlockEntity c)) return -1;
+		int n = 0;
+		for (int i = 0; i < c.size(); i++) n += c.getStack(i).getCount();
+		return n;
+	}
+
+	private static int count(PlayerInventory inv, net.minecraft.item.Item item) {
+		int n = 0;
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+			ItemStack s = inv.getStack(i);
+			if (s.isOf(item)) n += s.getCount();
+		}
+		return n;
+	}
+
+	// ---------------------------------------------------------------- plumbing
+
+	private static int server(MinecraftClient client, Function<MinecraftServer, Integer> job) {
+		MinecraftServer s = client.getServer();
+		try {
+			return s.submit(() -> job.apply(s)).get();
+		} catch (InterruptedException | ExecutionException e) {
+			log("server job failed: " + e);
+			return Integer.MIN_VALUE;
+		}
+	}
+
+	private static int[] server(MinecraftClient client, Function<MinecraftServer, int[]> job, Void unused) {
+		MinecraftServer s = client.getServer();
+		try {
+			return s.submit(() -> job.apply(s)).get();
+		} catch (InterruptedException | ExecutionException e) {
+			log("server job failed: " + e);
+			return new int[8];
+		}
+	}
+
+	private static void command(MinecraftClient client, String command) {
+		server(client, s -> {
+			s.getCommandManager().parseAndExecute(s.getCommandSource(), command);
+			return 0;
+		});
+	}
+
+	private static void next(String name) {
+		phase = name;
+		phaseStart = tick;
+		log("phase " + name);
+	}
+
+	private static void fail(MinecraftClient client, String why) {
+		check(why, false);
+		finish(client);
+	}
+
+	private static void finish(MinecraftClient client) {
+		log("RESULT " + passed + " passed, " + failed + " failed");
+		next("done");
+		client.scheduleStop();
+	}
+
+	private static void screenshot(MinecraftClient client, String name) {
+		client.getToastManager().clear();
+		ScreenshotRecorder.saveScreenshot(client.runDirectory, "hh_" + name + ".png", client.getFramebuffer(), 1, message -> {});
+		log("Screenshot " + name);
+	}
+
+	private static void check(String what, boolean ok) {
+		if (ok) passed++;
+		else failed++;
+		log((ok ? "PASS " : "FAIL ") + what);
+	}
+
+	private static void log(String message) {
+		HarvestHand.LOGGER.info("[SELFTEST] {}", message);
+	}
+}
