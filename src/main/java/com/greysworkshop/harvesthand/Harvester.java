@@ -1198,6 +1198,7 @@ public final class Harvester {
 		if (slot < 0) return;
 		if (slot < 9) {
 			inv.setSelectedSlot(slot);
+			sync(client);
 			return;
 		}
 		int target = -1;
@@ -1209,6 +1210,12 @@ public final class Harvester {
 		for (int i = 8; i >= 0 && target < 0; i--) if (i != avoid) target = i;
 		client.interactionManager.clickSlot(p.playerScreenHandler.syncId, slot, target, SlotActionType.SWAP, p);
 		inv.setSelectedSlot(target);
+		sync(client);
+	}
+
+	/** The server must know the slot before a crop is hit, or it breaks it with the old item (no Fortune). */
+	private static void sync(MinecraftClient client) {
+		if (client.interactionManager != null) ((com.greysworkshop.harvesthand.mixin.InteractionManagerAccess) client.interactionManager).harvesthand$syncSelectedSlot();
 	}
 
 	static void look(ClientPlayerEntity p, Vec3d at) {

@@ -172,6 +172,8 @@ final class SelfTest {
 					check("picks the Fortune III diamond hoe, not the worn netherite one (slot " + best + ")", best == 2);
 					check("running", Harvester.running());
 					carrotCells = f.cells.stream().filter(c -> !wheatRow(c.getZ()) && !emptyPatch(c.getX(), c.getZ())).toList();
+					watchBreaks();
+					serverBreaks = serverFortune = 0;
 					mark = server(client, s -> ripe(s.getOverworld()));
 					log("ripe at start: " + mark);
 					next("clear");
@@ -188,6 +190,9 @@ final class SelfTest {
 					check("all replanted, empty patch planted (" + Harvester.replanted + " replanted at once, " + Harvester.planted + " planted)",
 							Harvester.replanted + Harvester.planted >= Harvester.harvested + 9 && Harvester.planted >= 9);
 					check("every harvest with Fortune (" + Harvester.fortuneHarvests + " of " + Harvester.harvested + ")", Harvester.fortuneHarvests == Harvester.harvested);
+					// What counts for the drops is what the server thinks is in your hand.
+					check("the server broke every crop with the Fortune hoe (" + serverFortune + " of " + serverBreaks + ")",
+							serverBreaks >= mark && serverFortune == serverBreaks);
 					int[] k = server(client, s -> kinds(s.getOverworld()), null);
 					check("the wheat strip is still wheat and the rest carrots (" + k[0] + " wheat wrong, " + k[1] + " carrots wrong)", k[0] == 0 && k[1] == 0);
 					check("worn netherite hoe untouched (" + inv.getStack(5).getDamage() + ")", inv.getStack(5).getDamage() == 2021);
@@ -531,6 +536,20 @@ final class SelfTest {
 			if (s.isOf(item)) n += s.getCount();
 		}
 		return n;
+	}
+
+	/** Crop breaks the server saw, and how many of those were with a Fortune tool in the main hand. */
+	private static volatile int serverBreaks, serverFortune;
+	private static boolean watching;
+
+	private static void watchBreaks() {
+		if (watching) return;
+		watching = true;
+		net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents.AFTER.register((world, player, pos, state, be) -> {
+			if (!Farm.isCrop(state.getBlock())) return;
+			serverBreaks++;
+			if (Harvester.fortune(player.getMainHandStack()) > 0) serverFortune++;
+		});
 	}
 
 	// ---------------------------------------------------------------- plumbing
