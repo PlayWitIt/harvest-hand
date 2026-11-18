@@ -190,6 +190,8 @@ final class SelfTest {
 					check("all replanted, empty patch planted (" + Harvester.replanted + " replanted at once, " + Harvester.planted + " planted)",
 							Harvester.replanted + Harvester.planted >= Harvester.harvested + 9 && Harvester.planted >= 9);
 					check("every harvest with Fortune (" + Harvester.fortuneHarvests + " of " + Harvester.harvested + ")", Harvester.fortuneHarvests == Harvester.harvested);
+					check("the Fortune hoe is what you see in hand between crops (" + client.player.getMainHandStack().getName().getString() + ")",
+							Harvester.fortune(client.player.getMainHandStack()) > 0);
 					// What counts for the drops is what the server thinks is in your hand.
 					check("the server broke every crop with the Fortune hoe (" + serverFortune + " of " + serverBreaks + ")",
 							serverBreaks >= mark && serverFortune == serverBreaks);

@@ -102,16 +102,28 @@ public final class Harvester {
 		start(client, HhConfig.INSTANCE.radius);
 	}
 
+	/** Where it was started, in which dimension and how far out it looked: to carry on there after a disconnect. */
+	static BlockPos startAt;
+	static String startDim;
+	static int startRadius;
+
 	static void start(MinecraftClient client, int radius) {
+		if (client.player != null) start(client, radius, Walker.feet(client.player));
+	}
+
+	static void start(MinecraftClient client, int radius, BlockPos from) {
 		ClientPlayerEntity p = client.player;
 		if (p == null || client.world == null || running()) return;
-		Farm f = Farm.scan(client.world, Walker.feet(p), radius, Chests.mine(client), HhConfig.INSTANCE.till);
+		Farm f = Farm.scan(client.world, from, radius, Chests.mine(client), HhConfig.INSTANCE.till);
 		if (f.cells.isEmpty()) {
 			stopReason = "No farmland here: stand inside your farm and start again.";
 			chat(p, Text.literal(stopReason).formatted(Formatting.RED));
 			return;
 		}
 		farm = f;
+		startAt = from.toImmutable();
+		startDim = client.world.getRegistryKey().getValue().toString();
+		startRadius = radius;
 		state = State.RUN;
 		paused = holding = fullWarned = false;
 		harvested = replanted = planted = tilled = deposited = ticks = fortuneHarvests = 0;
@@ -167,6 +179,14 @@ public final class Harvester {
 				: aside + " Harvesting by hand meanwhile.";
 	}
 
+	/** After a disconnect: a box it left on the wall, to break and pick up first (it opens towards the air it was hit from). */
+	static void recoverBox(ClientWorld w, BlockPos pos) {
+		BlockState s = w.getBlockState(pos);
+		if (!(s.getBlock() instanceof ShulkerBoxBlock)) return;
+		box = pos.toImmutable();
+		boxFace = s.contains(ShulkerBoxBlock.FACING) ? s.get(ShulkerBoxBlock.FACING) : Direction.UP;
+	}
+
 	static void togglePause(MinecraftClient client) {
 		if (!running() || client.player == null) return;
 		paused = !paused;
@@ -191,6 +211,8 @@ public final class Harvester {
 			chat(client.player, Text.literal(why + " " + summary()).formatted(Formatting.YELLOW));
 		}
 		HhConfig.INSTANCE.totalHarvested += harvested;
+		// Stopped for any other reason (you, a death...): nothing to carry on with after a disconnect.
+		if (!why.equals(Resume.DISCONNECTED)) HhConfig.INSTANCE.resume = null;
 		HhConfig.save();
 	}
 
@@ -455,6 +477,9 @@ public final class Harvester {
 		look(p, hit);
 		client.interactionManager.interactBlock(p, Hand.MAIN_HAND, new BlockHitResult(hit, Direction.UP, soil, false));
 		p.swingHand(Hand.MAIN_HAND);
+		// Back to the Fortune tool, so that's what you see in hand (and it's ready for the next crop).
+		int tool = bestTool(inv);
+		if (tool >= 0 && tool < 9) hand(client, p, tool, -1);
 		farm.crop.put(c, crop);
 		return Farm.isCrop(w.getBlockState(c).getBlock());
 	}

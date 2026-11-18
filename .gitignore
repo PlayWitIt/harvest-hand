@@ -3,3 +3,5 @@ build/
 run/
 .idea/
 *.iml
+run-kick/
+run-kick-server/

@@ -62,7 +62,10 @@ final class HhScreen extends Screen {
 		y += step;
 		addDrawableChild(toggle(x, y, half, "Wait in the middle", () -> cf.waitInMiddle, v -> cf.waitInMiddle = v,
 				"With nothing to do, wait where every crop is closest."));
-		addDrawableChild(toggle(x + half + 4, y, half, "Status on screen", () -> cf.hud, v -> cf.hud = v, "The two lines at the top left."));
+		addDrawableChild(toggle(x + half + 4, y, half, "Status on screen", () -> cf.hud, v -> cf.hud = v, "The lines at the top left."));
+		y += step;
+		addDrawableChild(toggle(x, y, W, "Reconnect and carry on when kicked", () -> cf.reconnect, v -> cf.reconnect = v,
+				"Kicked or dropped while it's running: it reconnects after " + cf.reconnectSeconds + " s (longer each try, up to 5 minutes) and carries on with the same farm. Quitting yourself never brings it back."));
 		y += step + 4;
 		addDrawableChild(ButtonWidget.builder(Text.literal("Done"), b -> close()).dimensions(x + W / 4, y, W / 2, 20).build());
 	}

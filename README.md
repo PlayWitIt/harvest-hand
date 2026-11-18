@@ -5,9 +5,14 @@ harvested the moment it's fully grown, and the same crop is planted straight bac
 
 - **Crops:** carrots, potatoes, wheat, beetroot and nether wart (on soul sand). Each plot gets back what grew there;
   empty farmland gets the farm's main crop.
-- **Best tool first:** it harvests with the highest-Fortune item you carry (Fortune III gives the most drops). Hoes win
-  a tie, then the one with the most uses left. Crops don't wear tools, but the tool guard still puts any tool aside with
-  10 uses left so it never breaks. With no usable Fortune tool it harvests by hand, holding the seeds, and carries on.
+- **Best tool first:** it harvests with any tool that has Fortune, off hand included: the highest Fortune wins (Fortune
+  III gives the most drops), a hoe wins a tie, then the one with the most uses left. The Fortune tool stays in your hand
+  between crops, and the status lines show which one and how many harvests got Fortune. Crops don't wear tools, but the
+  tool guard still puts any tool aside with 10 uses left so it never breaks. With no usable Fortune tool it harvests by
+  hand, holding the seeds, and carries on.
+- **AFK through kicks:** kicked, or the server restarts, while it's running: it reconnects by itself (after 10 s, then
+  longer each try, up to 5 minutes; Cancel is on the disconnect screen) and carries on with the same farm, fetching a
+  shulker box it had out first. Quitting yourself never brings it back. Turn it off in the settings (Numpad 6).
 - **Fast:** anything in reach is harvested and replanted in the same tick, up to 2 crops a tick (`/hh perTick 1-4`).
   It walks to the nearest ripe crop or dropped item and harvests everything it passes. With nothing to do it waits in
   the middle of the farm, where every plot is closest.
@@ -53,3 +58,7 @@ source. It starts with nothing growing, no carrots on you and carrots lying on t
 grass. It checks every plot gets planted and the grass tilled, that ripe crops right in front of you go at once even
 when you're hurt and hungry, that it keeps up at 10× growth, that it keeps going tabbed out and with the inventory open,
 and the Numpad 4, 5 and 6 keys.
+
+`scripts/kicktest.sh` runs a local server (offline, flat) and the mod against it: farming, kicked, then the server
+stopping and starting again. It checks it reconnects and carries on harvesting each time, and that quitting yourself
+doesn't. Every crop break in the self-test is checked against what the server had in your hand.

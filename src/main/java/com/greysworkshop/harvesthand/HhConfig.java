@@ -39,6 +39,11 @@ final class HhConfig {
 	/** Chests you placed or marked ({@code /hh chest}), as "server|dimension|x,y,z": the only ones it stores in. */
 	java.util.List<String> chests = new java.util.ArrayList<>();
 	long totalHarvested;
+	/** Kicked while it's running: reconnect by itself (after {@link #reconnectSeconds}, longer each try) and carry on. */
+	boolean reconnect = true;
+	int reconnectSeconds = 10;
+	/** What to carry on with after a disconnect, until it does. */
+	Resume.Pending resume;
 
 	static void load() {
 		try {
@@ -55,6 +60,7 @@ final class HhConfig {
 		c.perTick = Math.max(1, Math.min(4, c.perTick));
 		c.minHealth = Math.max(0, Math.min(19, c.minHealth));
 		c.toolReserve = Math.max(2, Math.min(500, c.toolReserve));
+		c.reconnectSeconds = Math.max(3, Math.min(300, c.reconnectSeconds));
 	}
 
 	static void save() {

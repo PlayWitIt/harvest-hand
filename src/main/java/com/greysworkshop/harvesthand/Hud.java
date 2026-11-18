@@ -33,9 +33,18 @@ final class Hud {
 		StringBuilder b = new StringBuilder();
 		b.append(Harvester.harvested).append(" harvested · ").append(Harvester.ripe(client.world)).append(" ripe of ").append(Harvester.farm.cells.size());
 		if (Harvester.waitCount > 0) b.append(" · ").append(String.format("%.1f", Harvester.waitTotal / (double) Harvester.waitCount / 20)).append(" s wait");
-		if (Harvester.lastFortune >= 0) b.append(" · ").append(Harvester.lastFortune > 0 ? "Fortune " + Harvester.lastFortune : "by hand");
 		boolean full = client.player.getInventory().getEmptySlot() < 0;
 		lines.add(Text.literal(b + (full ? " · inventory full" : "")).formatted(full ? Formatting.RED : Formatting.GRAY));
+		// Which tool the crops are broken with, and how many got Fortune: plain to see, not guessed from the hand.
+		if (Harvester.lastFortune > 0) {
+			lines.add(Text.literal("Fortune " + Harvester.lastFortune + ": " + Harvester.toolName + " · " + Harvester.fortuneHarvests + " of " + Harvester.harvested
+					+ " harvests with Fortune").formatted(Formatting.GREEN));
+		} else if (Harvester.lastFortune == 0) {
+			int best = Harvester.bestTool(client.player.getInventory());
+			String why = Harvester.asideNote(client.player.getInventory());
+			lines.add(Text.literal(best >= 0 ? "Fortune tool found: using it from the next crop" : !why.isEmpty() ? why : "By hand: no tool with Fortune on you")
+					.formatted(Formatting.YELLOW));
+		}
 		return lines;
 	}
 }

@@ -40,6 +40,7 @@ java {
 jar {
 	exclude 'com/greysworkshop/harvesthand/SelfTest*'
 	exclude 'com/greysworkshop/harvesthand/FarmTest*'
+	exclude 'com/greysworkshop/harvesthand/KickTest*'
 }
 
 loom {
@@ -49,6 +50,14 @@ loom {
 			name = "Self Test"
 			vmArgs "-Dharvesthand.selftest=true", "-Dharvesthand.debug=true", "-Xmx1536m"
 			runDir "run"
+		}
+		// Kicked and the server restarting, on a real server: ./gradlew runKickTest (run it with scripts/kicktest.sh, which runs a local server).
+		kickTest {
+			client()
+			name = "Kick Test"
+			vmArgs "-Dharvesthand.kicktest=true", "-Dharvesthand.debug=true", "-Xmx1280m"
+			programArgs "--quickPlayMultiplayer", "localhost:25601", "--username", "HhKick"
+			runDir "run-kick"
 		}
 		farmTest {
 			client()
