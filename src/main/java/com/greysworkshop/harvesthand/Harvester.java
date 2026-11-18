@@ -1126,11 +1126,24 @@ public final class Harvester {
 		return HhConfig.INSTANCE.protectTools ? left > HhConfig.INSTANCE.toolReserve : left > 1;
 	}
 
-	/** The slot with the highest Fortune it may use (most uses left on a tie, hoes first), or -1: by hand. */
+	/** Where a tool can be: the hotbar, the inventory and the off hand. */
+	static final int[] TOOL_SLOTS = toolSlots();
+
+	private static int[] toolSlots() {
+		int[] a = new int[PlayerInventory.MAIN_SIZE + 1];
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) a[i] = i;
+		a[PlayerInventory.MAIN_SIZE] = PlayerInventory.OFF_HAND_SLOT;
+		return a;
+	}
+
+	/**
+	 * The slot with the Fortune tool it may use, or -1: by hand. Any tool with Fortune will do: the highest Fortune
+	 * wins (that's what gives the most drops); on the same level a hoe, then the one with the most uses left.
+	 */
 	static int bestTool(PlayerInventory inv) {
 		int best = -1, bestLevel = 0, bestLeft = -1;
 		boolean bestHoe = false;
-		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+		for (int i : TOOL_SLOTS) {
 			ItemStack s = inv.getStack(i);
 			if (s.isEmpty() || !safe(s)) continue;
 			int level = fortune(s);
@@ -1149,7 +1162,7 @@ public final class Harvester {
 
 	/** Why the Fortune tool you have isn't used: it's down to its last uses. Empty if not that. */
 	static String asideNote(PlayerInventory inv) {
-		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+		for (int i : TOOL_SLOTS) {
 			ItemStack s = inv.getStack(i);
 			if (!s.isEmpty() && fortune(s) > 0 && !safe(s)) {
 				return "Your " + s.getName().getString() + " is down to " + (s.getMaxDamage() - s.getDamage()) + " uses: put aside so it never breaks (mend it and it's used again).";
@@ -1208,7 +1221,12 @@ public final class Harvester {
 			if (i != avoid && fortune(s) == 0 && !s.isIn(ItemTags.HOES) && !Farm.produce(s.getItem())) target = i;
 		}
 		for (int i = 8; i >= 0 && target < 0; i--) if (i != avoid) target = i;
-		client.interactionManager.clickSlot(p.playerScreenHandler.syncId, slot, target, SlotActionType.SWAP, p);
+		if (slot == PlayerInventory.OFF_HAND_SLOT) {
+			// From the off hand: swap it with that hotbar slot (the same as pressing F over it).
+			client.interactionManager.clickSlot(p.playerScreenHandler.syncId, 36 + target, PlayerInventory.OFF_HAND_SLOT, SlotActionType.SWAP, p);
+		} else {
+			client.interactionManager.clickSlot(p.playerScreenHandler.syncId, slot, target, SlotActionType.SWAP, p);
+		}
 		inv.setSelectedSlot(target);
 		sync(client);
 	}

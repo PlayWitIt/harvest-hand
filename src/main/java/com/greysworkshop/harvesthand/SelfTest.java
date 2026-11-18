@@ -373,6 +373,35 @@ final class SelfTest {
 					check("harvested by hand and replanted (" + (Harvester.harvested - mark) + " harvested, last with " + Harvester.toolName + ", " + ripe + " of the 6 not done after " + since / 20 + " s)",
 							Harvester.harvested - mark >= 6 && Harvester.lastFortune == 0 && ripe == 0);
 					check("worn netherite hoe still never used (" + inv.getStack(5).getDamage() + ")", inv.getStack(5).isOf(Items.NETHERITE_HOE) && inv.getStack(5).getDamage() == 2021);
+					next("anytool");
+				}
+			}
+			// No hoe, but a Fortune pickaxe in the off hand: any Fortune tool will do.
+			case "anytool" -> {
+				if (since == 1) command(client, "item replace entity @p weapon.offhand with minecraft:diamond_pickaxe[minecraft:enchantments={\"minecraft:fortune\":2}]");
+				if (since == 10) {
+					int best = Harvester.bestTool(inv);
+					check("with no hoe it takes the Fortune pickaxe, even from the off hand (slot " + best + ")", best == PlayerInventory.OFF_HAND_SLOT);
+					mark = Harvester.harvested;
+					serverBreaks = serverFortune = 0;
+					ripen(client, 6);
+				}
+				int notDone = since > 10 && since % 20 == 0 ? server(client, s -> (int) ripened.stream().filter(c -> !s.getOverworld().getBlockState(c).isOf(Blocks.CARROTS)
+						|| s.getOverworld().getBlockState(c).get(CropBlock.AGE) == 7).count()) : -1;
+				if (notDone == 0 || since == 20 * 40) {
+					check("harvested with the Fortune pickaxe (" + (Harvester.harvested - mark) + " harvested, last with " + Harvester.toolName + ", Fortune " + Harvester.lastFortune
+							+ "; the server had Fortune for " + serverFortune + " of " + serverBreaks + ")",
+							Harvester.harvested - mark >= 6 && Harvester.lastFortune == 2 && serverBreaks >= 6 && serverFortune == serverBreaks && notDone == 0);
+					// Same Fortune level: the hoe is preferred.
+					command(client, "item replace entity @p container.27 with minecraft:iron_hoe[minecraft:enchantments={\"minecraft:fortune\":2}]");
+					next("hoefirst");
+				}
+			}
+			case "hoefirst" -> {
+				if (since == 10) {
+					int best = Harvester.bestTool(inv);
+					check("a hoe wins over a pickaxe with the same Fortune (slot " + best + ": " + (best < 0 ? "none" : inv.getStack(best).getName().getString()) + ")",
+							best >= 0 && inv.getStack(best).isOf(Items.IRON_HOE));
 					next("pause");
 				}
 			}
