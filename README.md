@@ -21,6 +21,8 @@ harvested the moment it's fully grown, and the same crop is planted straight bac
   you carry most of, or picks up carrots, potatoes or seeds lying on the ground and plants those.
 - **As much ground as possible:** with a hoe, it clears grass and flowers, tills bare dirt and grass the water reaches
   (within 4 blocks), and plants it. Trampled farmland is tilled again too.
+- **Tabbed out or in your inventory:** it keeps walking, harvesting, planting and eating with the pause menu, your
+  inventory, chat or the settings open. It only waits while you're dragging an item or using a chest of your own.
 - Hurt, hungry or low on health, it keeps working. It only lets go of the keys for a moment when a mob or player is
   close and hitting you. If the server undoes harvests, it slows down by itself until they stick.
 
@@ -49,4 +51,5 @@ ripe crop waits. It also checks keeping up at 13× growth, storing only in the c
 `./gradlew runFarmTest` builds a farm like the ones people really make: nine 9 × 9 farms side by side, each with its water
 source. It starts with nothing growing, no carrots on you and carrots lying on the ground, and one of the nine still
 grass. It checks every plot gets planted and the grass tilled, that ripe crops right in front of you go at once even
-when you're hurt and hungry, that it keeps up at 10× growth, and the Numpad 4, 5 and 6 keys.
+when you're hurt and hungry, that it keeps up at 10× growth, that it keeps going tabbed out and with the inventory open,
+and the Numpad 4, 5 and 6 keys.

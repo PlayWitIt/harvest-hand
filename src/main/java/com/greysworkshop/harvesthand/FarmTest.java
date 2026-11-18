@@ -108,7 +108,7 @@ final class FarmTest {
 
 	private static void tick(MinecraftClient client) {
 		if (client.player == null || client.world == null || client.getServer() == null) return;
-		if (client.currentScreen instanceof GameMenuScreen) {
+		if (client.currentScreen instanceof GameMenuScreen && !phase.equals("screens")) {
 			client.setScreen(null);
 			log("game menu opened by itself: closed");
 			return;
@@ -216,7 +216,48 @@ final class FarmTest {
 					double avg = (Harvester.waitTotal - waitMark) / (double) Math.max(1, Harvester.waitCount - countMark) / 20;
 					check(String.format("kept every plot growing at 10x growth (%d harvested, %.1f s average wait, %d planted, %d farmland of %d, %d ripe now)",
 							Harvester.harvested - mark, avg, r[0], r[1], PLOTS, ripe), Harvester.harvested - mark > 150 && avg <= 15 && r[0] >= PLOTS - 3 && r[1] >= PLOTS - 1 && ripe <= 40);
-					next("keys");
+					next("screens");
+				}
+			}
+			// Tabbed out (the pause menu, which doesn't stop a server) and with the inventory open: it keeps walking,
+			// harvesting, planting and eating.
+			case "screens" -> {
+				if (since == 1) {
+					// Open to LAN: like a real server, the pause menu no longer stops the world.
+					client.getServer().openToLan(GameMode.SURVIVAL, false, 25599);
+					client.options.pauseOnLostFocus = true;
+				}
+				if (since == 20) {
+					client.onWindowFocusChanged(false);
+					log("tabbed out: screen " + (client.currentScreen == null ? "none" : client.currentScreen.getClass().getSimpleName()) + ", paused " + client.isPaused());
+					ripenAway(client);
+					mark = tick;
+				}
+				if (mark > 0 && since > 20 && (since % 10 == 0 && left(client) == 0 || since == 20 + 20 * 25)) {
+					check(String.format("tabbed out (pause menu open): crops a walk away harvested and replanted (%d left after %.1f s, screen %s)", left(client), (tick - mark) / 20.0,
+							client.currentScreen == null ? "none" : client.currentScreen.getClass().getSimpleName()),
+							left(client) == 0 && client.currentScreen instanceof GameMenuScreen && !client.isPaused());
+					client.onWindowFocusChanged(true);
+					client.setScreen(new net.minecraft.client.gui.screen.ingame.InventoryScreen(client.player));
+					// Hungry: 3 drumsticks (no effect draining it while it eats).
+					server(client, srv -> {
+						srv.getPlayerManager().getPlayerList().forEach(pl -> pl.getHungerManager().setFoodLevel(6));
+						return 0;
+					});
+					ripenAway(client);
+					mark = -tick;
+				}
+				if (mark < 0) {
+					int start = -mark;
+					if ((tick - start) % 10 == 0 && left(client) == 0 && client.player.getHungerManager().getFoodLevel() > 14 || tick - start == 20 * 30) {
+						check(String.format("inventory open: crops a walk away harvested and replanted, and it ate (%d left after %.1f s, food %d, screen %s)", left(client),
+								(tick - start) / 20.0, client.player.getHungerManager().getFoodLevel(), client.currentScreen == null ? "none" : client.currentScreen.getClass().getSimpleName()),
+								left(client) == 0 && client.currentScreen instanceof net.minecraft.client.gui.screen.ingame.InventoryScreen && client.player.getHungerManager().getFoodLevel() > 14);
+						client.options.pauseOnLostFocus = false;
+						client.setScreen(null);
+						mark = 0;
+						next("keys");
+					}
 				}
 			}
 			// Numpad 6 opens the settings; Numpad 5 pauses; Numpad 4 carries on.
@@ -240,6 +281,31 @@ final class FarmTest {
 			default -> {
 			}
 		}
+	}
+
+	/** Ripens ten crops 6 to 12 blocks from you, so it has to walk. */
+	private static void ripenAway(MinecraftClient client) {
+		BlockPos me = client.player.getBlockPos();
+		front.clear();
+		for (BlockPos c : Harvester.farm.cells) {
+			double d = Math.sqrt(c.getSquaredDistance(me.up()));
+			if (d >= 6 && d <= 12 && Math.floorMod(c.getX() * 5 + c.getZ() * 3, 7) == 0 && front.size() < 10) front.add(c);
+		}
+		List<BlockPos> cells = List.copyOf(front);
+		server(client, s -> {
+			for (BlockPos c : cells) s.getOverworld().setBlockState(c, Blocks.CARROTS.getDefaultState().with(CropBlock.AGE, 7), 3);
+			return 0;
+		});
+		log("ripened " + cells.size() + " crops a walk away");
+	}
+
+	/** Of those, how many aren't harvested and replanted yet. */
+	private static int left(MinecraftClient client) {
+		List<BlockPos> cells = List.copyOf(front);
+		return server(client, s -> (int) cells.stream().filter(c -> {
+			BlockState st = s.getOverworld().getBlockState(c);
+			return !st.isOf(Blocks.CARROTS) || st.get(CropBlock.AGE) == 7;
+		}).count());
 	}
 
 	private static void press(int key) {

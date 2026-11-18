@@ -231,9 +231,11 @@ public final class Harvester {
 			return;
 		}
 		holding = false;
-		// Your own screen open (inventory, chat): wait. Ours (the chest) is fine.
-		if (client.currentScreen != null && state != State.DEPOSIT) {
+		// It works tabbed out (the pause menu) and with your inventory, chat or the settings open. It only waits while you're
+		// moving items about, or using a chest or furnace of your own: swapping tools then would get in your way.
+		if (state != State.DEPOSIT && userBusy(p)) {
 			walker.stop(client);
+			status = Text.literal("Waiting: you're using your inventory");
 			return;
 		}
 		cool.values().removeIf(t -> t <= ticks);
@@ -268,6 +270,11 @@ public final class Harvester {
 	}
 
 	/** Notes when each crop turned ripe (for the average wait the HUD shows). */
+	private static boolean userBusy(ClientPlayerEntity p) {
+		ScreenHandler h = p.currentScreenHandler;
+		return h != p.playerScreenHandler || !h.getCursorStack().isEmpty();
+	}
+
 	private static boolean attackerNear(ClientPlayerEntity p, ClientWorld w) {
 		return !w.getEntitiesByClass(net.minecraft.entity.LivingEntity.class, p.getBoundingBox().expand(6),
 				e -> e != p && e.isAlive() && (e instanceof net.minecraft.entity.mob.HostileEntity || e instanceof net.minecraft.entity.player.PlayerEntity
@@ -1057,6 +1064,8 @@ public final class Harvester {
 			// Up at the sky: eating while looking at farmland would plant a carrot in it.
 			p.setPitch(-90);
 			client.options.useKey.setPressed(true);
+			// With a screen open (inventory, tabbed out) the use key does nothing: start eating directly.
+			if (!p.isUsingItem() && eating % 5 == 2) client.interactionManager.interactItem(p, Hand.MAIN_HAND);
 			if (food > eatFood || eating > 60) {
 				client.options.useKey.setPressed(false);
 				if (food <= eatFood) eatCooldown = 600;
