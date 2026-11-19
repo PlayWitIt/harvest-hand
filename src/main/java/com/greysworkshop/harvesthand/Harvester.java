@@ -81,14 +81,16 @@ public final class Harvester {
 	private static final class Full {
 		private final Map<BlockPos, Integer> until = new HashMap<>();
 
+		/** When it was found full. How long it's left alone is worked out on each look: a hopper may have gone in since. */
 		void add(BlockPos c) {
-			ClientWorld w = MinecraftClient.getInstance().world;
-			until.put(c, ticks + (w != null && Chests.drained(w, c) ? 300 : 6000));
+			until.put(c, ticks);
 		}
 
 		boolean contains(BlockPos c) {
-			Integer u = until.get(c);
-			return u != null && u > ticks;
+			Integer since = until.get(c);
+			if (since == null) return false;
+			ClientWorld w = MinecraftClient.getInstance().world;
+			return ticks - since < (w != null && Chests.drained(w, c) ? 300 : 6000);
 		}
 
 		void remove(BlockPos c) {
@@ -167,6 +169,7 @@ public final class Harvester {
 		undone = 0;
 		undoneWarned = false;
 		fullChests.clear();
+		noBoxes.clear();
 		badSpots.clear();
 		boxWarned = false;
 		walkingTo = null;
@@ -197,8 +200,10 @@ public final class Harvester {
 				+ " shulker box" + (empty + part == 1 ? "" : "es") + " on you";
 		boolean chests = !farm.chests.isEmpty();
 		if (HhConfig.INSTANCE.boxMode() == HhConfig.Boxes.AUTO && anyDrained()) {
-			return "Your chest is drained by hoppers: the harvest goes straight in and nothing is ever taken out of it. If it backs up, it's tried again every 15 s"
-					+ (carried.isEmpty() ? "." : ", and meanwhile the " + carried + " catch the rest (part-filled first); full boxes go into the chest too.");
+			return boxSupply()
+					? "Shulker loader into your drained chest: every box filled to the top" + (HhConfig.INSTANCE.oneCropPerBox ? " with one crop" : "") + ", part-filled first, and full boxes go down the drain to your storage"
+					+ (carried.isEmpty() ? "" : " (" + carried + ")") + ". Empty boxes come from your other chests. Loose only once no box is left. Nothing is ever taken out of the drained chest."
+					: "Your chest is drained by hoppers: no boxes to fill, so the harvest goes straight in (nothing is ever taken out). Carry empty boxes, or keep them in another chest of yours, and it sends full boxes down instead. A backed-up chest is tried again every 15 s.";
 		}
 		return switch (mode()) {
 			case AUTO, OFF -> chests ? "A full inventory goes into your chests (shulker boxes are off)." : "No chest of yours here: place one at the farm's edge, or look at one and /hh chest.";
@@ -739,7 +744,33 @@ public final class Harvester {
 	static HhConfig.Boxes mode() {
 		HhConfig.Boxes m = HhConfig.INSTANCE.boxMode();
 		if (m != HhConfig.Boxes.AUTO) return m;
-		return anyDrained() ? HhConfig.Boxes.SPARE : HhConfig.Boxes.LOADER;
+		// A drained chest is your storage: full boxes go down it whenever there are boxes to fill (on you, or in a chest
+		// of yours that isn't drained), loose harvest only when there are none.
+		return !anyDrained() || boxSupply() ? HhConfig.Boxes.LOADER : HhConfig.Boxes.SPARE;
+	}
+
+	/** Chests that had no box to fill last time it looked: not looked in again for 2 minutes, or until you open one. */
+	private static final Map<BlockPos, Integer> noBoxes = new HashMap<>();
+
+	private static boolean noBoxes(BlockPos c) {
+		Integer u = noBoxes.get(c);
+		return u != null && u > ticks;
+	}
+
+	/** Boxes it could fill: one on you with room, or a chest of yours (not drained) that may hold some. */
+	static boolean boxSupply() {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client.player != null) {
+			PlayerInventory inv = client.player.getInventory();
+			for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+				ItemStack s = inv.getStack(i);
+				if (harvestBox(s) && used(s) < 27) return true;
+			}
+		}
+		ClientWorld w = client.world;
+		if (w == null || farm == null) return false;
+		for (BlockPos c : farm.chests) if (takeFrom(w, c) && !fullChests.contains(c) && !noBoxes(c)) return true;
+		return false;
 	}
 
 	static boolean anyDrained() {
@@ -764,7 +795,7 @@ public final class Harvester {
 	private static boolean containerFree(ClientWorld w, Job j) {
 		for (BlockPos c : farm.chests) {
 			if (fullChests.contains(c)) continue;
-			if (j == Job.BOXES && !takeFrom(w, c)) continue;
+			if (j == Job.BOXES && (!takeFrom(w, c) || noBoxes(c))) continue;
 			return true;
 		}
 		return false;
@@ -836,7 +867,7 @@ public final class Harvester {
 		boolean groundFirst = want == Want.LOOSE && mode() == HhConfig.Boxes.LOADER;
 		return farm.chests.stream().filter(c -> !fullChests.contains(c)
 						&& (want == Want.LOOSE || !Chests.placedBox(w, c))
-						&& (want != Want.FETCH_BOXES || takeFrom(w, c)))
+						&& (want != Want.FETCH_BOXES || takeFrom(w, c) && !noBoxes(c)))
 				.min(java.util.Comparator.<BlockPos>comparingInt(c -> groundFirst && Chests.placedBox(w, c) ? 0 : want != Want.FETCH_BOXES && Chests.drained(w, c) ? 1 : 2)
 						.thenComparingDouble(c -> p.getEntityPos().squaredDistanceTo(Vec3d.ofCenter(c)))).orElse(null);
 	}
@@ -1063,8 +1094,11 @@ public final class Harvester {
 		if (best == null) {
 			// No box for it in this chest: if it's the only kind left, store the rest loose.
 			log("no box for {} in the chest at {}", item, chest.toShortString());
+			noBoxes.put(chest, ticks + 2_400);
 			boxRound = true;
-			job = Job.LOOSE;
+			// The rest goes in loose: down a drained chest if there is one (that's your storage), else in this one.
+			if (anyDrained()) shut(p);
+			else job = Job.LOOSE;
 			return;
 		}
 		if (emptySlots(inv) == 0) {
@@ -1681,6 +1715,16 @@ public final class Harvester {
 			fullWarned = false;
 		}
 		if (!msg.isEmpty()) say(client, msg);
+	}
+
+	/** You opened a chest of yours: you may have put boxes in or emptied it, so it's worth a look again. */
+	static void chestUsed(MinecraftClient client, BlockPos c) {
+		if (state == State.DEPOSIT || farm == null) return;
+		BlockPos other = client.world == null ? null : Chests.otherHalf(client.world, c);
+		for (BlockPos q : other == null ? new BlockPos[] {c} : new BlockPos[] {c, other}) {
+			noBoxes.remove(q);
+			fullChests.remove(q);
+		}
 	}
 
 	static void chestRemoved(MinecraftClient client, BlockPos c) {

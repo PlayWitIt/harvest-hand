@@ -41,6 +41,8 @@ final class Chests {
 			if (!world.isClient()) return ActionResult.PASS;
 			MinecraftClient client = MinecraftClient.getInstance();
 			if (player != client.player) return ActionResult.PASS;
+			// Your own chest opened by you (not while it's storing): it may have boxes in now, or room.
+			if (container(world, hit.getBlockPos())) Harvester.chestUsed(client, hit.getBlockPos().toImmutable());
 			ItemStack held = player.getStackInHand(hand);
 			// Placing a chest or barrel adds it (a shulker box only when you mark it: it puts its own down to fill).
 			if (held.getItem() instanceof BlockItem bi && chestOrBarrel(bi.getBlock())) {

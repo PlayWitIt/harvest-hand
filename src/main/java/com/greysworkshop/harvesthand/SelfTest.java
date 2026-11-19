@@ -412,6 +412,8 @@ final class SelfTest {
 						}
 						return 0;
 					});
+					// As if you'd opened the chest and put the boxes in yourself (that's what tells it to look again).
+					Harvester.chestUsed(client, CHEST);
 					command(client, "clear @p minecraft:wheat");
 					command(client, "give @p minecraft:carrot 1856");
 				}
@@ -473,7 +475,7 @@ final class SelfTest {
 					for (int i = 0; i < 5; i++) c.append(i == 0 ? "" : ",").append("{slot:").append(i).append(",item:{id:\"minecraft:carrot\",count:64}}");
 					command(client, "item replace entity @p inventory.20 with minecraft:blue_shulker_box[minecraft:container=[" + c + "]]");
 					command(client, "item replace entity @p inventory.21 with minecraft:shulker_box");
-					command(client, "give @p minecraft:carrot 768");
+					command(client, "give @p minecraft:carrot 1920");
 				}
 				if (since == 10) {
 					fillRest(client, inv, 0);
@@ -482,12 +484,14 @@ final class SelfTest {
 				if (since > 20 && since % 40 == 0) log("drain: " + Harvester.status.getString() + " · " + Harvester.state + " · deposited " + Harvester.deposited);
 				ItemStack blue = find(inv, Items.BLUE_SHULKER_BOX), white = find(inv, Items.SHULKER_BOX);
 				if (since == 20 * 25) {
-					int sunk = server(client, s -> chestCount(s.getOverworld(), sink));
-					check("sees the hopper under your chest: auto stores straight in (" + Chests.drained(client.world, CHEST) + ", " + Harvester.mode() + ")",
-							Chests.drained(client.world, CHEST) && Harvester.mode() == HhConfig.Boxes.SPARE);
-					check("harvest into the drained chest, boxes untouched (" + (Harvester.deposited - mark) + " stored, part-filled box " + Harvester.used(blue)
-							+ " used, empty box " + (Harvester.emptyBox(white) ? "empty" : "used") + ", " + sunk + " drained on)",
-							Harvester.deposited - mark > 300 && Harvester.used(blue) == 5 && Harvester.emptyBox(white) && sunk > 0);
+					int[] a = server(client, s -> chestBoxes(s.getOverworld(), CHEST), null), b = server(client, s -> chestBoxes(s.getOverworld(), sink), null);
+					check("sees the hopper under your chest, with boxes on you it's a loader (" + Chests.drained(client.world, CHEST) + ", " + Harvester.mode() + ")",
+							Chests.drained(client.world, CHEST) && Harvester.mode() == HhConfig.Boxes.LOADER);
+					check("the part-filled box was filled to the top and sent down the drain (" + (a[0] + b[0]) + " full boxes in the chest or drained on, "
+							+ (a[2] + b[2]) + " loose carrots, " + Harvester.partBoxes(inv) + " part-filled on you)",
+							a[0] + b[0] >= 1 && a[2] + b[2] == 0 && Harvester.partBoxes(inv) <= 1 && blue.isEmpty());
+					command(client, "clear @p minecraft:shulker_box");
+					command(client, "clear @p minecraft:blue_shulker_box");
 					// Backed up: full of carrots that are on their way to storage.
 					server(client, s -> {
 						if (s.getOverworld().getBlockEntity(CHEST) instanceof ChestBlockEntity c) for (int i = 0; i < c.size(); i++) c.setStack(i, new ItemStack(Items.CARROT, 64));
@@ -500,9 +504,7 @@ final class SelfTest {
 				if (since == 20 * 25 + 10) fillRest(client, inv, 0);
 				if (since == 20 * 55) {
 					int total = server(client, s -> chestCount(s.getOverworld(), CHEST) + chestCount(s.getOverworld(), sink));
-					check("backed up: the part-filled box caught the rest, the empty one still empty (" + Harvester.used(blue) + " used, "
-							+ (Harvester.emptyBox(white) ? "empty" : "used") + ", " + Harvester.partBoxes(inv) + " part-filled)",
-							Harvester.used(blue) > 5 && Harvester.emptyBox(white) && Harvester.partBoxes(inv) == 1);
+					check("no boxes: stores loose (" + Harvester.mode() + ")", Harvester.mode() == HhConfig.Boxes.SPARE);
 					check("nothing taken out of the drained chest (" + total + " in it and drained on, at least " + 27 * 64 + ")", total >= 27 * 64);
 					// It drains: emptied, and it's used again without a restart.
 					server(client, s -> {
@@ -557,7 +559,9 @@ final class SelfTest {
 				if (since == 1) command(client, "item replace entity @p weapon.offhand with minecraft:diamond_pickaxe[minecraft:enchantments={\"minecraft:fortune\":2}]");
 				if (since == 10) {
 					int best = Harvester.bestTool(inv);
-					check("with no hoe it takes the Fortune pickaxe, even from the off hand (slot " + best + ")", best == PlayerInventory.OFF_HAND_SLOT);
+					// It may already have it in hand (swapped from the off hand into the hotbar for a crop in reach).
+					check("with no hoe it takes the Fortune pickaxe, even from the off hand (slot " + best + ")",
+							best >= 0 && inv.getStack(best).isOf(Items.DIAMOND_PICKAXE) && Harvester.fortune(inv.getStack(best)) == 2);
 					mark = Harvester.harvested;
 					serverBreaks = serverFortune = 0;
 					ripen(client, 6);
@@ -758,16 +762,23 @@ final class SelfTest {
 		return String.join(",", kinds);
 	}
 
-	/** {boxes in the chest full of carrots, loose items in the chest}. */
+	/** {boxes in the chest full of carrots, loose items in the chest, loose carrots}. */
 	private static int[] chestBoxes(ServerWorld w) {
-		int[] r = new int[2];
-		if (!(w.getBlockEntity(CHEST) instanceof ChestBlockEntity c)) return r;
+		return chestBoxes(w, CHEST);
+	}
+
+	private static int[] chestBoxes(ServerWorld w, BlockPos at) {
+		int[] r = new int[3];
+		if (!(w.getBlockEntity(at) instanceof ChestBlockEntity c)) return r;
 		for (int i = 0; i < c.size(); i++) {
 			ItemStack s = c.getStack(i);
 			if (s.isEmpty()) continue;
 			if (Harvester.isBox(s)) {
 				if (carrotsIn(s) == 27 * 64) r[0]++;
-			} else r[1] += s.getCount();
+			} else {
+				r[1] += s.getCount();
+				if (s.isOf(Items.CARROT)) r[2] += s.getCount();
+			}
 		}
 		return r;
 	}

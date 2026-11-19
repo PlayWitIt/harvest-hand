@@ -99,8 +99,7 @@ public final class HarvestHand implements ClientModInitializer {
 	static String boxesNote() {
 		HhConfig c = HhConfig.INSTANCE;
 		String what = switch (c.boxMode()) {
-			case AUTO -> "Shulker boxes: auto. " + (Harvester.running() ? (Harvester.anyDrained() ? "Your chest is drained by hoppers, so the harvest goes straight in and boxes only catch what it can't take (part-filled first)."
-					: "No drained chest here, so it works as a loader: every box filled to the top, full ones into your chests.") : "A chest drained by hoppers gets the harvest straight in, boxes only for overflow; with none, it's a loader.");
+			case AUTO -> "Shulker boxes: auto. A shulker loader whenever there are boxes to fill: every box to the top, part-filled first, full ones into your chest (a drained one sends them on to storage, and nothing is taken out of it). No boxes: loose.";
 			case OFF -> "Shulker boxes: off. A full inventory goes into your chests only.";
 			case SPARE -> "Shulker boxes: spare. Your chests first; the boxes you carry once they're full, part-filled boxes topped up first.";
 			case LOADER -> "Shulker boxes: loader. Every box filled to the top, part-filled first; full boxes go into your chests, empty ones come out.";

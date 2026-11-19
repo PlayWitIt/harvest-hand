@@ -267,12 +267,27 @@ final class FarmTest {
 					check("Numpad 6 opens the settings (" + (client.currentScreen == null ? "nothing" : client.currentScreen.getClass().getSimpleName()) + ")",
 							client.currentScreen instanceof HhScreen);
 				}
-				if (since == 16) screenshot(client, "farm_2_settings");
-				if (since == 19) client.setScreen(null);
-				if (since == 20) press(GLFW.GLFW_KEY_KP_5);
-				if (since == 26) check("Numpad 5 pauses", Harvester.paused);
-				if (since == 30) press(GLFW.GLFW_KEY_KP_4);
-				if (since == 36) {
+				// Each tab fits the window (854 x 480 at GUI scale 2 is 427 x 240), nothing on top of anything else.
+				for (HhScreen.Tab tb : HhScreen.Tab.values()) {
+					int at = 12 + tb.ordinal() * 10;
+					if (since == at) {
+						HhScreen.tab = tb;
+						client.setScreen(new HhScreen());
+					}
+					if (since == at + 4 && client.currentScreen instanceof HhScreen s) {
+						List<String> bad = s.layoutProblems();
+						check("settings tab " + tb.label + " fits " + s.width + " x " + s.height + (bad.isEmpty() ? "" : ": " + bad), bad.isEmpty());
+					}
+					if (since == at + 6) screenshot(client, "farm_2_settings_" + tb.name().toLowerCase(java.util.Locale.ROOT));
+				}
+				if (since == 49) {
+					HhScreen.tab = HhScreen.Tab.FARMING;
+					client.setScreen(null);
+				}
+				if (since == 50) press(GLFW.GLFW_KEY_KP_5);
+				if (since == 56) check("Numpad 5 pauses", Harvester.paused);
+				if (since == 60) press(GLFW.GLFW_KEY_KP_4);
+				if (since == 66) {
 					check("Numpad 4 carries on", Harvester.running() && !Harvester.paused);
 					Harvester.stop(client, "Stopped.");
 					finish(client);
