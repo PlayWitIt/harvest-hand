@@ -37,11 +37,14 @@ final class HhConfig {
 	int toolReserve = 10;
 	boolean hud = true;
 	/**
-	 * How shulker boxes are used. OFF: never. SPARE (few boxes): only once your chests are full or there are none.
+	 * How shulker boxes are used. AUTO (default): SPARE when a chest of yours is drained by hoppers (that chest is
+	 * your storage), LOADER otherwise. OFF: never. SPARE (few boxes): only once your chests are full or there are none.
 	 * LOADER (plenty of boxes): instead of a shulker loader. Every box is filled to the top, part-filled ones first;
 	 * full boxes go into your chests and empty ones come out of them; loose harvest only once no box is left.
 	 */
-	Boxes boxes = Boxes.LOADER;
+	Boxes boxes = Boxes.AUTO;
+	/** You picked {@link #boxes} yourself; until then it's auto (0.2.0 saved loader without you choosing it). */
+	boolean boxesChosen;
 	/** Each box holds one crop (a box of carrots, a box of wheat...), the way a sorter-loader would. */
 	boolean oneCropPerBox = true;
 	/** Chests you placed or marked ({@code /hh chest}), as "server|dimension|x,y,z": the only ones it stores in. */
@@ -54,7 +57,7 @@ final class HhConfig {
 	Resume.Pending resume;
 
 	enum Boxes {
-		OFF("off"), SPARE("spare"), LOADER("loader");
+		AUTO("auto"), LOADER("loader"), SPARE("spare"), OFF("off");
 
 		final String word;
 
@@ -68,7 +71,7 @@ final class HhConfig {
 	}
 
 	Boxes boxMode() {
-		return boxes == null ? Boxes.LOADER : boxes;
+		return boxes == null ? Boxes.AUTO : boxes;
 	}
 
 	static void load() {
@@ -82,7 +85,7 @@ final class HhConfig {
 		}
 		HhConfig c = INSTANCE;
 		if (c.chests == null) c.chests = new java.util.ArrayList<>();
-		if (c.boxes == null) c.boxes = Boxes.LOADER;
+		if (c.boxes == null || !c.boxesChosen) c.boxes = Boxes.AUTO;
 		c.radius = Math.max(4, Math.min(128, c.radius));
 		c.perTick = Math.max(1, Math.min(4, c.perTick));
 		c.minHealth = Math.max(0, Math.min(19, c.minHealth));

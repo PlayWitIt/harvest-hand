@@ -71,7 +71,34 @@ public final class Harvester {
 	private static int fightUntil, depositStage, depositWait, idleTicks;
 	private static float lastHealth = -1;
 	private static BlockPos chest;
-	private static final java.util.Set<BlockPos> fullChests = new java.util.HashSet<>();
+	/** Chests that were full (or out of reach): left alone for a while, then tried again. */
+	private static final Full fullChests = new Full();
+
+	/**
+	 * Full for now. A chest that hoppers drain empties again by itself, so it's tried again after 15 s; any other after
+	 * 5 minutes (you may have emptied it).
+	 */
+	private static final class Full {
+		private final Map<BlockPos, Integer> until = new HashMap<>();
+
+		void add(BlockPos c) {
+			ClientWorld w = MinecraftClient.getInstance().world;
+			until.put(c, ticks + (w != null && Chests.drained(w, c) ? 300 : 6000));
+		}
+
+		boolean contains(BlockPos c) {
+			Integer u = until.get(c);
+			return u != null && u > ticks;
+		}
+
+		void remove(BlockPos c) {
+			until.remove(c);
+		}
+
+		void clear() {
+			until.clear();
+		}
+	}
 	/** The shulker box it has put down to fill (null: none), the wall face it's on, and spots that didn't work. */
 	static BlockPos box;
 	private static BlockPos spot;
@@ -169,8 +196,12 @@ public final class Harvester {
 		String carried = empty + part == 0 ? "" : (part > 0 ? part + " part-filled" + (empty > 0 ? " and " : "") : "") + (empty > 0 ? empty + " empty" : "")
 				+ " shulker box" + (empty + part == 1 ? "" : "es") + " on you";
 		boolean chests = !farm.chests.isEmpty();
+		if (HhConfig.INSTANCE.boxMode() == HhConfig.Boxes.AUTO && anyDrained()) {
+			return "Your chest is drained by hoppers: the harvest goes straight in and nothing is ever taken out of it. If it backs up, it's tried again every 15 s"
+					+ (carried.isEmpty() ? "." : ", and meanwhile the " + carried + " catch the rest (part-filled first); full boxes go into the chest too.");
+		}
 		return switch (mode()) {
-			case OFF -> chests ? "A full inventory goes into your chests (shulker boxes are off)." : "No chest of yours here: place one at the farm's edge, or look at one and /hh chest.";
+			case AUTO, OFF -> chests ? "A full inventory goes into your chests (shulker boxes are off)." : "No chest of yours here: place one at the farm's edge, or look at one and /hh chest.";
 			case SPARE -> (chests ? "A full inventory goes into your chests" + (carried.isEmpty() ? "." : ", then the " + carried + " once they're full.")
 					: carried.isEmpty() ? "No chest of yours and no shulker boxes on you: place a chest at the farm's edge, or /hh chest on one." : "A full inventory goes into the " + carried + ".")
 					+ " Part-filled boxes are topped up first.";
@@ -701,8 +732,26 @@ public final class Harvester {
 	/** Boxes filled to the top, and boxes put in your chests, since it started. */
 	static int boxesFilled, boxesStored;
 
+	/**
+	 * The box mode in force. Auto: with a chest of yours that hoppers drain, that chest is your storage and boxes only
+	 * catch what it can't take (spare); without one, every box is filled to the top (loader).
+	 */
 	static HhConfig.Boxes mode() {
-		return HhConfig.INSTANCE.boxMode();
+		HhConfig.Boxes m = HhConfig.INSTANCE.boxMode();
+		if (m != HhConfig.Boxes.AUTO) return m;
+		return anyDrained() ? HhConfig.Boxes.SPARE : HhConfig.Boxes.LOADER;
+	}
+
+	static boolean anyDrained() {
+		ClientWorld w = MinecraftClient.getInstance().world;
+		if (w == null || farm == null) return false;
+		for (BlockPos c : farm.chests) if (Chests.drained(w, c)) return true;
+		return false;
+	}
+
+	/** Never take from a chest that hoppers drain: whatever's in it is on its way to your storage. */
+	private static boolean takeFrom(ClientWorld w, BlockPos c) {
+		return !Chests.placedBox(w, c) && !Chests.drained(w, c);
 	}
 
 	static int emptySlots(PlayerInventory inv) {
@@ -711,11 +760,11 @@ public final class Harvester {
 		return n;
 	}
 
-	/** A container of yours it can still use, for loose harvest or (boxes) to swap boxes in. */
+	/** A container of yours it can still use, for loose harvest or (boxes) to fetch boxes from. */
 	private static boolean containerFree(ClientWorld w, Job j) {
 		for (BlockPos c : farm.chests) {
 			if (fullChests.contains(c)) continue;
-			if (j == Job.BOXES && Chests.placedBox(w, c)) continue;
+			if (j == Job.BOXES && !takeFrom(w, c)) continue;
 			return true;
 		}
 		return false;
@@ -775,11 +824,20 @@ public final class Harvester {
 		return out;
 	}
 
-	/** The nearest container of yours for this job, a box on the ground first for loose harvest when filling boxes. */
-	private static BlockPos nearestContainer(ClientPlayerEntity p, ClientWorld w, Job j) {
-		boolean groundFirst = j == Job.LOOSE && mode() == HhConfig.Boxes.LOADER;
-		return farm.chests.stream().filter(c -> !fullChests.contains(c) && (j == Job.LOOSE || !Chests.placedBox(w, c)))
-				.min(java.util.Comparator.<BlockPos>comparingInt(c -> groundFirst && Chests.placedBox(w, c) ? 0 : 1)
+	/** What a chest visit is for. */
+	private enum Want {LOOSE, STORE_BOXES, FETCH_BOXES}
+
+	/**
+	 * The nearest container of yours for this: loose harvest and full boxes go to a chest hoppers drain first (that's
+	 * your storage); boxes are only fetched from a chest that isn't drained; with the loader on, a box on the ground
+	 * you marked takes loose harvest first.
+	 */
+	private static BlockPos nearestContainer(ClientPlayerEntity p, ClientWorld w, Want want) {
+		boolean groundFirst = want == Want.LOOSE && mode() == HhConfig.Boxes.LOADER;
+		return farm.chests.stream().filter(c -> !fullChests.contains(c)
+						&& (want == Want.LOOSE || !Chests.placedBox(w, c))
+						&& (want != Want.FETCH_BOXES || takeFrom(w, c)))
+				.min(java.util.Comparator.<BlockPos>comparingInt(c -> groundFirst && Chests.placedBox(w, c) ? 0 : want != Want.FETCH_BOXES && Chests.drained(w, c) ? 1 : 2)
 						.thenComparingDouble(c -> p.getEntityPos().squaredDistanceTo(Vec3d.ofCenter(c)))).orElse(null);
 	}
 
@@ -794,35 +852,38 @@ public final class Harvester {
 		HhConfig.Boxes m = mode();
 		chest = null;
 		depositWait = 0;
+		// Full boxes on you go into your chest first (a drained one sends them on to your storage).
+		if (m != HhConfig.Boxes.OFF && storable(inv) >= 0 && (chest = nearestContainer(p, w, Want.STORE_BOXES)) != null) {
+			job = Job.BOXES;
+			fetched = false;
+			depositStage = 1;
+			return;
+		}
 		if (m == HhConfig.Boxes.LOADER) {
-			if (storable(inv) >= 0 && (chest = nearestContainer(p, w, Job.BOXES)) != null) {
-				job = Job.BOXES;
-				fetched = false;
-				depositStage = 1;
-				return;
-			}
 			if (produce && !boxWarned && pickBox(inv) >= 0) {
 				depositStage = 10;
 				return;
 			}
-			if (produce && (chest = nearestContainer(p, w, Job.LOOSE)) != null && Chests.placedBox(w, chest)) {
+			if (produce && (chest = nearestContainer(p, w, Want.LOOSE)) != null && Chests.placedBox(w, chest)) {
 				job = Job.LOOSE;
 				depositStage = 1;
 				return;
 			}
-			if (produce && !boxRound && (chest = nearestContainer(p, w, Job.BOXES)) != null) {
+			if (produce && !boxRound && (chest = nearestContainer(p, w, Want.FETCH_BOXES)) != null) {
 				job = Job.BOXES;
 				fetched = false;
 				depositStage = 1;
 				return;
 			}
 		}
-		if (produce && (chest = nearestContainer(p, w, Job.LOOSE)) != null) {
+		if (produce && (chest = nearestContainer(p, w, Want.LOOSE)) != null) {
 			job = Job.LOOSE;
 			depositStage = 1;
 			return;
 		}
-		if (produce && m == HhConfig.Boxes.SPARE && !boxWarned && pickBox(inv) >= 0) {
+		// Spare boxes only catch what's left with the inventory still full: once the chests took some, it farms on
+		// and tries them again later (a drained one in 15 s), instead of part-filling a box.
+		if (produce && m == HhConfig.Boxes.SPARE && emptySlots(inv) <= 1 && !boxWarned && pickBox(inv) >= 0) {
 			depositStage = 10;
 			return;
 		}
@@ -954,6 +1015,11 @@ public final class Harvester {
 			}
 			client.interactionManager.clickSlot(h.syncId, slot.id, 0, SlotActionType.QUICK_MOVE, p);
 			if (!isBox(inv.getStack(full))) boxesStored++;
+			return;
+		}
+		// Nothing comes out of a chest that hoppers drain, or of one only visited to put boxes away.
+		if (!takeFrom(MinecraftClient.getInstance().world, chest) || mode() != HhConfig.Boxes.LOADER) {
+			shut(p);
 			return;
 		}
 		// Loose harvest in the chest (one stack put in to make room for a box, or what was there before): out again to be

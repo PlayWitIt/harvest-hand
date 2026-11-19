@@ -41,7 +41,7 @@ public final class HarvestHand implements ClientModInitializer {
 						.executes(c -> {
 							MinecraftClient client = MinecraftClient.getInstance();
 							if (client.player != null) Harvester.chat(client.player, Text.literal(Harvester.running() ? Hud.lines(client).stream().map(Text::getString).reduce((a, b) -> a + " · " + b).orElse("")
-									: "/hh start [radius] while standing in your farm (Numpad 4), /hh pause (Numpad 5), settings (Numpad 6, or /hh menu), /hh stop, /hh chest (add the chest or shulker box you look at; /hh chest remove, /hh chests lists them), /hh boxes off|spare|loader|onecrop, /hh perTick <1-4>, /hh radius <4-128>.").formatted(Formatting.GRAY));
+									: "/hh start [radius] while standing in your farm (Numpad 4), /hh pause (Numpad 5), settings (Numpad 6, or /hh menu), /hh stop, /hh chest (add the chest or shulker box you look at; /hh chest remove, /hh chests lists them), /hh boxes auto|loader|spare|off|onecrop, /hh perTick <1-4>, /hh radius <4-128>.").formatted(Formatting.GRAY));
 							return 1;
 						})
 						.then(literal("start").executes(c -> run(client -> Harvester.startOrResume(client)))
@@ -57,6 +57,7 @@ public final class HarvestHand implements ClientModInitializer {
 								.then(literal("clear").executes(c -> run(Chests::clear))))
 						.then(literal("boxes").executes(c -> say(boxesNote()))
 								.then(literal("off").executes(c -> setBoxes(HhConfig.Boxes.OFF)))
+								.then(literal("auto").executes(c -> setBoxes(HhConfig.Boxes.AUTO)))
 								.then(literal("spare").executes(c -> setBoxes(HhConfig.Boxes.SPARE)))
 								.then(literal("loader").executes(c -> setBoxes(HhConfig.Boxes.LOADER)))
 								.then(literal("onecrop").executes(c -> {
@@ -98,15 +99,18 @@ public final class HarvestHand implements ClientModInitializer {
 	static String boxesNote() {
 		HhConfig c = HhConfig.INSTANCE;
 		String what = switch (c.boxMode()) {
+			case AUTO -> "Shulker boxes: auto. " + (Harvester.running() ? (Harvester.anyDrained() ? "Your chest is drained by hoppers, so the harvest goes straight in and boxes only catch what it can't take (part-filled first)."
+					: "No drained chest here, so it works as a loader: every box filled to the top, full ones into your chests.") : "A chest drained by hoppers gets the harvest straight in, boxes only for overflow; with none, it's a loader.");
 			case OFF -> "Shulker boxes: off. A full inventory goes into your chests only.";
 			case SPARE -> "Shulker boxes: spare. Your chests first; the boxes you carry once they're full, part-filled boxes topped up first.";
 			case LOADER -> "Shulker boxes: loader. Every box filled to the top, part-filled first; full boxes go into your chests, empty ones come out.";
 		};
-		return what + " One crop per box: " + (c.oneCropPerBox ? "on" : "off") + ". (/hh boxes off|spare|loader|onecrop)";
+		return what + " One crop per box: " + (c.oneCropPerBox ? "on" : "off") + ". (/hh boxes auto|loader|spare|off|onecrop)";
 	}
 
 	private static int setBoxes(HhConfig.Boxes b) {
 		HhConfig.INSTANCE.boxes = b;
+		HhConfig.INSTANCE.boxesChosen = true;
 		HhConfig.save();
 		return say(boxesNote());
 	}

@@ -449,9 +449,85 @@ final class SelfTest {
 					check("spare: stored loose in the chest, the box on you still empty (" + (Harvester.deposited - mark) + " stored, box "
 							+ (Harvester.emptyBox(find(inv, Items.SHULKER_BOX)) ? "empty" : "used") + ")",
 							Harvester.deposited - mark > 300 && Harvester.emptyBox(find(inv, Items.SHULKER_BOX)));
-					HhConfig.INSTANCE.boxes = HhConfig.Boxes.LOADER;
+					HhConfig.INSTANCE.boxes = HhConfig.Boxes.AUTO;
 					command(client, "clear @p minecraft:cobblestone");
 					command(client, "clear @p minecraft:shulker_box");
+					next("drain");
+				}
+			}
+			// Your chest drains into storage through a hopper: auto sends the harvest straight in, never takes anything
+			// out, uses boxes only while it's backed up (part-filled first) and tries it again once it's drained.
+			case "drain" -> {
+				BlockPos hopper = CHEST.down(), sink = CHEST.down(2);
+				if (since == 1) {
+					server(client, s -> {
+						ServerWorld w = s.getOverworld();
+						floor = w.getBlockState(hopper);
+						below = w.getBlockState(sink);
+						if (w.getBlockEntity(CHEST) instanceof ChestBlockEntity c) for (int i = 0; i < c.size(); i++) c.setStack(i, ItemStack.EMPTY);
+						w.setBlockState(sink, Blocks.CHEST.getDefaultState(), 3);
+						w.setBlockState(hopper, Blocks.HOPPER.getDefaultState().with(net.minecraft.block.HopperBlock.FACING, net.minecraft.util.math.Direction.DOWN), 3);
+						return 0;
+					});
+					StringBuilder c = new StringBuilder();
+					for (int i = 0; i < 5; i++) c.append(i == 0 ? "" : ",").append("{slot:").append(i).append(",item:{id:\"minecraft:carrot\",count:64}}");
+					command(client, "item replace entity @p inventory.20 with minecraft:blue_shulker_box[minecraft:container=[" + c + "]]");
+					command(client, "item replace entity @p inventory.21 with minecraft:shulker_box");
+					command(client, "give @p minecraft:carrot 768");
+				}
+				if (since == 10) {
+					fillRest(client, inv, 0);
+					mark = Harvester.deposited;
+				}
+				if (since > 20 && since % 40 == 0) log("drain: " + Harvester.status.getString() + " · " + Harvester.state + " · deposited " + Harvester.deposited);
+				ItemStack blue = find(inv, Items.BLUE_SHULKER_BOX), white = find(inv, Items.SHULKER_BOX);
+				if (since == 20 * 25) {
+					int sunk = server(client, s -> chestCount(s.getOverworld(), sink));
+					check("sees the hopper under your chest: auto stores straight in (" + Chests.drained(client.world, CHEST) + ", " + Harvester.mode() + ")",
+							Chests.drained(client.world, CHEST) && Harvester.mode() == HhConfig.Boxes.SPARE);
+					check("harvest into the drained chest, boxes untouched (" + (Harvester.deposited - mark) + " stored, part-filled box " + Harvester.used(blue)
+							+ " used, empty box " + (Harvester.emptyBox(white) ? "empty" : "used") + ", " + sunk + " drained on)",
+							Harvester.deposited - mark > 300 && Harvester.used(blue) == 5 && Harvester.emptyBox(white) && sunk > 0);
+					// Backed up: full of carrots that are on their way to storage.
+					server(client, s -> {
+						if (s.getOverworld().getBlockEntity(CHEST) instanceof ChestBlockEntity c) for (int i = 0; i < c.size(); i++) c.setStack(i, new ItemStack(Items.CARROT, 64));
+						if (s.getOverworld().getBlockEntity(sink) instanceof ChestBlockEntity c) for (int i = 0; i < c.size(); i++) c.setStack(i, ItemStack.EMPTY);
+						return 0;
+					});
+					command(client, "clear @p minecraft:cobblestone");
+					command(client, "give @p minecraft:carrot 1280");
+				}
+				if (since == 20 * 25 + 10) fillRest(client, inv, 0);
+				if (since == 20 * 55) {
+					int total = server(client, s -> chestCount(s.getOverworld(), CHEST) + chestCount(s.getOverworld(), sink));
+					check("backed up: the part-filled box caught the rest, the empty one still empty (" + Harvester.used(blue) + " used, "
+							+ (Harvester.emptyBox(white) ? "empty" : "used") + ", " + Harvester.partBoxes(inv) + " part-filled)",
+							Harvester.used(blue) > 5 && Harvester.emptyBox(white) && Harvester.partBoxes(inv) == 1);
+					check("nothing taken out of the drained chest (" + total + " in it and drained on, at least " + 27 * 64 + ")", total >= 27 * 64);
+					// It drains: emptied, and it's used again without a restart.
+					server(client, s -> {
+						if (s.getOverworld().getBlockEntity(CHEST) instanceof ChestBlockEntity c) for (int i = 0; i < c.size(); i++) c.setStack(i, ItemStack.EMPTY);
+						return 0;
+					});
+					command(client, "clear @p minecraft:cobblestone");
+					command(client, "give @p minecraft:carrot 640");
+				}
+				if (since == 20 * 55 + 10) {
+					fillRest(client, inv, 0);
+					mark = Harvester.deposited;
+				}
+				if (since == 20 * 85) {
+					check("drained chest tried again once it emptied (" + (Harvester.deposited - mark) + " stored)", Harvester.deposited - mark > 300);
+					command(client, "clear @p minecraft:cobblestone");
+					command(client, "clear @p minecraft:shulker_box");
+					command(client, "clear @p minecraft:blue_shulker_box");
+					server(client, s -> {
+						ServerWorld w = s.getOverworld();
+						if (w.getBlockEntity(sink) instanceof ChestBlockEntity c) for (int i = 0; i < c.size(); i++) c.setStack(i, ItemStack.EMPTY);
+						w.setBlockState(hopper, floor, 3);
+						w.setBlockState(sink, below, 3);
+						return 0;
+					});
 					Chests.toggle(client, CHEST);
 					next("hand");
 				}
@@ -645,6 +721,9 @@ final class SelfTest {
 		for (int i = 0; i < c.size(); i++) n += c.getStack(i).getCount();
 		return n;
 	}
+
+	/** What was under the chest before the drain test put a hopper and a chest there. */
+	private static BlockState floor, below;
 
 	/** Empty slots filled with cobblestone, leaving {@code leave} free. */
 	private static void fillRest(MinecraftClient client, PlayerInventory inv, int leave) {

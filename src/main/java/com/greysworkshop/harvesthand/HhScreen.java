@@ -69,6 +69,7 @@ final class HhScreen extends Screen {
 		y += step;
 		addDrawableChild(ButtonWidget.builder(boxLabel(), b -> {
 			cf.boxes = cf.boxMode().next();
+			cf.boxesChosen = true;
 			b.setMessage(boxLabel());
 			b.setTooltip(Tooltip.of(Text.literal(boxTip())));
 			HhConfig.save();
@@ -85,6 +86,7 @@ final class HhScreen extends Screen {
 
 	private static String boxTip() {
 		return switch (HhConfig.INSTANCE.boxMode()) {
+			case AUTO -> "Auto (best for most): a chest of yours that hoppers drain is your storage, so the harvest goes straight in and nothing is taken out of it; boxes only catch what it can't take, part-filled first. With no drained chest it works as a loader. Click to change.";
 			case OFF -> "Off: never uses shulker boxes, only your chests. Click to change.";
 			case SPARE -> "Spare (a few boxes): your chests first, then the boxes you carry once the chests are full. Part-filled boxes are topped up before an empty one is used. Click to change.";
 			case LOADER -> "Loader (plenty of boxes): does a shulker loader's job. Every box is filled to the top, part-filled first; full boxes go into your chests and empty ones come out of them. Loose in a chest only once no box is left. Click to change.";

@@ -83,6 +83,20 @@ final class Chests {
 		return w.getBlockState(p).getBlock() instanceof ShulkerBoxBlock;
 	}
 
+	/**
+	 * Hoppers drain it: an unlocked hopper right under it (or under the other half of a double chest). What goes in
+	 * flows on to your storage, so it never fills up for long and nothing is ever taken out of it.
+	 */
+	static boolean drained(World w, BlockPos p) {
+		if (!chestOrBarrel(w.getBlockState(p).getBlock())) return false;
+		BlockPos other = otherHalf(w, p);
+		for (BlockPos q : other == null ? new BlockPos[] {p} : new BlockPos[] {p, other}) {
+			BlockState under = w.getBlockState(q.down());
+			if (under.getBlock() instanceof net.minecraft.block.HopperBlock && under.get(net.minecraft.block.HopperBlock.ENABLED)) return true;
+		}
+		return false;
+	}
+
 	/** The other half of a double chest, or null. */
 	static BlockPos otherHalf(World w, BlockPos p) {
 		BlockState s = w.getBlockState(p);
@@ -213,6 +227,7 @@ final class Chests {
 			if (client.world != null && client.world.isChunkLoaded(p.getX() >> 4, p.getZ() >> 4)) {
 				if (placedBox(client.world, p)) b.append(" (shulker box)");
 				else if (otherHalf(client.world, p) != null) b.append(" (double)");
+				if (drained(client.world, p)) b.append(" (drained by a hopper: storage)");
 			}
 		}
 		Harvester.say(client, b + ". /hh chest remove while looking at one takes it off; /hh chests clear forgets them all here.");
