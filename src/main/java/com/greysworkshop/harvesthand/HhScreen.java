@@ -66,8 +66,29 @@ final class HhScreen extends Screen {
 		y += step;
 		addDrawableChild(toggle(x, y, W, "Reconnect and carry on when kicked", () -> cf.reconnect, v -> cf.reconnect = v,
 				"Kicked or dropped while it's running: it reconnects after " + cf.reconnectSeconds + " s (longer each try, up to 5 minutes) and carries on with the same farm. Quitting yourself never brings it back."));
+		y += step;
+		addDrawableChild(ButtonWidget.builder(boxLabel(), b -> {
+			cf.boxes = cf.boxMode().next();
+			b.setMessage(boxLabel());
+			b.setTooltip(Tooltip.of(Text.literal(boxTip())));
+			HhConfig.save();
+		}).dimensions(x, y, half, 20).tooltip(Tooltip.of(Text.literal(boxTip()))).build());
+		addDrawableChild(toggle(x + half + 4, y, half, "One crop per box", () -> cf.oneCropPerBox, v -> cf.oneCropPerBox = v,
+				"Each shulker box holds one crop: a box of carrots, a box of wheat. Off: any of the harvest goes in any box (fewer boxes part-filled)."));
 		y += step + 4;
 		addDrawableChild(ButtonWidget.builder(Text.literal("Done"), b -> close()).dimensions(x + W / 4, y, W / 2, 20).build());
+	}
+
+	private static Text boxLabel() {
+		return Text.literal("Shulker boxes: " + HhConfig.INSTANCE.boxMode().word);
+	}
+
+	private static String boxTip() {
+		return switch (HhConfig.INSTANCE.boxMode()) {
+			case OFF -> "Off: never uses shulker boxes, only your chests. Click to change.";
+			case SPARE -> "Spare (a few boxes): your chests first, then the boxes you carry once the chests are full. Part-filled boxes are topped up before an empty one is used. Click to change.";
+			case LOADER -> "Loader (plenty of boxes): does a shulker loader's job. Every box is filled to the top, part-filled first; full boxes go into your chests and empty ones come out of them. Loose in a chest only once no box is left. Click to change.";
+		};
 	}
 
 	@Override

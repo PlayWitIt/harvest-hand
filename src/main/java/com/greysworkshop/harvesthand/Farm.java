@@ -38,6 +38,8 @@ final class Farm {
 	/** Cells you can stand in. */
 	final List<BlockPos> stand = new ArrayList<>();
 	final Set<BlockPos> chests = new LinkedHashSet<>();
+	/** How far outside the farm a chest of yours can be and still be used. */
+	static final int CHEST_REACH = 16;
 	/** Where to wait when there's nothing to do: the standing cell nearest the middle of the crops. */
 	BlockPos centre;
 	int minX, minY, minZ, maxX, maxY, maxZ;
@@ -127,12 +129,6 @@ final class Farm {
 				f.bareGround.add(n);
 			}
 			for (Direction d : Direction.Type.HORIZONTAL) {
-				for (int dy = -1; dy <= 1; dy++) {
-					BlockPos side = n.offset(d).up(dy);
-					Block b = w.getBlockState(side).getBlock();
-					// Only your own chests: never one it just happens to find.
-					if ((b instanceof ChestBlock || b instanceof BarrelBlock) && mine.contains(side)) f.chests.add(side.toImmutable());
-				}
 				for (int dy = 1; dy >= -3; dy--) {
 					BlockPos next = n.offset(d).up(dy);
 					if (Math.abs(next.getX() - start.getX()) > radius || Math.abs(next.getZ() - start.getZ()) > radius
@@ -168,6 +164,14 @@ final class Farm {
 				f.crop.put(c, b);
 				counts.merge(b, 1, Integer::sum);
 			}
+		}
+		// Your chests (placed or marked, never one it just finds) at the farm or a little way off. A double chest once.
+		for (BlockPos c : mine.stream().sorted(java.util.Comparator.comparingLong(BlockPos::asLong)).toList()) {
+			if (c.getX() < f.minX - CHEST_REACH || c.getX() > f.maxX + CHEST_REACH || c.getZ() < f.minZ - CHEST_REACH || c.getZ() > f.maxZ + CHEST_REACH
+					|| c.getY() < f.minY - 8 || c.getY() > f.maxY + 8 || !Chests.container(w, c)) continue;
+			BlockPos other = Chests.otherHalf(w, c);
+			if (other != null && f.chests.contains(other)) continue;
+			f.chests.add(c.toImmutable());
 		}
 		f.main = counts.entrySet().stream().filter(e -> e.getKey() != Blocks.NETHER_WART).max(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse(null);
 		double cx = (double) sx / f.cells.size() + 0.5, cz = (double) sz / f.cells.size() + 0.5;

@@ -343,11 +343,12 @@ final class SelfTest {
 					mark = Harvester.deposited;
 				}
 				if (since > 20 && since % 20 == 0) log("box: " + Harvester.status.getString() + " · " + Harvester.state + " · box " + Harvester.box);
-				boolean back = since > 60 && Harvester.box == null && Harvester.state == Harvester.State.RUN && Harvester.boxes(inv) == 2 && filledBoxes(inv) == 1;
-				if (back || since == 20 * 45) {
+				// One crop per box: the carrots in one, the wheat in the other.
+				boolean back = since > 60 && Harvester.box == null && Harvester.state == Harvester.State.RUN && Harvester.boxes(inv) == 2 && filledBoxes(inv) == 2;
+				if (back || since == 20 * 60) {
 					int placed = server(client, s -> shulkersOut(s.getOverworld()));
-					check("full inventory went into a shulker box (" + (Harvester.deposited - mark) + " items, " + filledBoxes(inv) + " filled, after " + since / 20 + " s)",
-							Harvester.deposited - mark > 300 && filledBoxes(inv) == 1);
+					check("full inventory went into the shulker boxes, one crop each (" + (Harvester.deposited - mark) + " items, " + filledBoxes(inv) + " filled, "
+							+ boxKinds(inv) + ", after " + since / 20 + " s)", Harvester.deposited - mark > 300 && filledBoxes(inv) == 2 && boxKinds(inv).equals("carrot,wheat"));
 					check("both shulker boxes back in the inventory, none left out (" + Harvester.boxes(inv) + " held, " + placed + " placed)", Harvester.boxes(inv) == 2 && placed == 0);
 					check("the chest that was just there never touched (" + server(client, s -> chestCount(s.getOverworld(), OTHER)) + " items)",
 							server(client, s -> chestCount(s.getOverworld(), OTHER)) == 0);
@@ -355,6 +356,103 @@ final class SelfTest {
 					command(client, "clear @p minecraft:cobblestone");
 					command(client, "clear @p minecraft:shulker_box");
 					command(client, "clear @p minecraft:blue_shulker_box");
+					next("topup");
+				}
+			}
+			// A part-filled box is topped up to the top before an empty one is opened; a box of your own stuff is never touched.
+			case "topup" -> {
+				if (since == 1) {
+					StringBuilder c = new StringBuilder();
+					for (int i = 0; i < 20; i++) c.append(i == 0 ? "" : ",").append("{slot:").append(i).append(",item:{id:\"minecraft:carrot\",count:64}}");
+					command(client, "item replace entity @p inventory.20 with minecraft:blue_shulker_box[minecraft:container=[" + c + "]]");
+					command(client, "item replace entity @p inventory.21 with minecraft:shulker_box");
+					command(client, "item replace entity @p inventory.22 with minecraft:red_shulker_box[minecraft:container=[{slot:0,item:{id:\"minecraft:diamond\",count:1}}]]");
+					command(client, "give @p minecraft:carrot 768");
+				}
+				if (since == 10) {
+					fillRest(client, inv, 0);
+					mark = Harvester.deposited;
+				}
+				if (since > 20 && since % 20 == 0) log("topup: " + Harvester.status.getString() + " · " + Harvester.state + " · box " + Harvester.box);
+				ItemStack blue = find(inv, Items.BLUE_SHULKER_BOX), white = find(inv, Items.SHULKER_BOX), red = find(inv, Items.RED_SHULKER_BOX);
+				boolean back = since > 60 && Harvester.box == null && Harvester.state == Harvester.State.RUN && Harvester.boxes(inv) == 3 && !Harvester.emptyBox(white);
+				if (back || since == 20 * 60) {
+					check("the part-filled box was filled to the top first (" + Harvester.used(blue) + " of 27 used, " + carrotsIn(blue) + " carrots)",
+							Harvester.used(blue) == 27 && carrotsIn(blue) == 27 * 64);
+					check("only then the empty one, and just one box is left part-filled (" + Harvester.used(white) + " used, " + Harvester.partBoxes(inv) + " part-filled)",
+							Harvester.used(white) > 0 && Harvester.partBoxes(inv) == 1);
+					check("the box with your diamond never touched (" + Harvester.used(red) + " used, " + (red.isEmpty() ? "gone" : "here") + ")",
+							!red.isEmpty() && Harvester.used(red) == 1 && !Harvester.harvestBox(red));
+					check("counted as filled to the top (" + Harvester.boxesFilled + ")", Harvester.boxesFilled >= 1);
+					check("all three boxes back, none left out (" + Harvester.boxes(inv) + ", " + server(client, s -> shulkersOut(s.getOverworld())) + " placed)",
+							Harvester.boxes(inv) == 3 && server(client, s -> shulkersOut(s.getOverworld())) == 0);
+					command(client, "clear @p minecraft:cobblestone");
+					command(client, "clear @p minecraft:shulker_box");
+					command(client, "clear @p minecraft:blue_shulker_box");
+					command(client, "clear @p minecraft:red_shulker_box");
+					next("loader");
+				}
+			}
+			// Shulker loader: empty boxes come out of your chest, are filled to the top and full ones go back in. Nothing loose.
+			case "loader" -> {
+				if (since == 1) {
+					// /hh chest twice keeps it on the list (it used to take it off).
+					net.minecraft.util.math.Vec3d top = net.minecraft.util.math.Vec3d.ofCenter(CHEST).add(0, 0.5, 0);
+					client.crosshairTarget = new net.minecraft.util.hit.BlockHitResult(top, net.minecraft.util.math.Direction.UP, CHEST, false);
+					Chests.markLooked(client);
+					client.crosshairTarget = new net.minecraft.util.hit.BlockHitResult(top, net.minecraft.util.math.Direction.UP, CHEST, false);
+					Chests.markLooked(client);
+					check("/hh chest twice keeps the chest (" + Chests.mine(client) + ", farm " + Harvester.farm.chests + ")",
+							Chests.mine(client).contains(CHEST) && Harvester.farm.chests.contains(CHEST));
+					server(client, s -> {
+						if (s.getOverworld().getBlockEntity(CHEST) instanceof ChestBlockEntity c) {
+							for (int i = 0; i < c.size(); i++) c.setStack(i, ItemStack.EMPTY);
+							for (int i = 0; i < 4; i++) c.setStack(i, new ItemStack(Items.SHULKER_BOX));
+							c.markDirty();
+						}
+						return 0;
+					});
+					command(client, "clear @p minecraft:wheat");
+					command(client, "give @p minecraft:carrot 1856");
+				}
+				if (since == 10) {
+					fillRest(client, inv, 2);
+					mark = Harvester.deposited;
+				}
+				if (since > 20 && since % 20 == 0) log("loader: " + Harvester.status.getString() + " · " + Harvester.state + " · box " + Harvester.box + " · stored " + Harvester.boxesStored);
+				boolean back = since > 100 && Harvester.box == null && Harvester.state == Harvester.State.RUN && Harvester.boxesStored >= 1 && count(inv, Items.CARROT) <= 128;
+				if (back || since == 20 * 90) {
+					int[] c = server(client, s -> chestBoxes(s.getOverworld()), null);
+					check("full boxes put in your chest (" + c[0] + " full of carrots in the chest, " + Harvester.boxesStored + " put in, carrots on you " + count(inv, Items.CARROT) + ")",
+							c[0] >= 1 && Harvester.boxesStored >= 1);
+					check("nothing loose in the chest, only boxes (" + c[1] + " loose items)", c[1] == 0);
+					check("no full box left on you, at most one part-filled per crop (" + Harvester.storable(inv) + ", " + Harvester.partBoxes(inv) + " part-filled)",
+							Harvester.storable(inv) < 0 && Harvester.partBoxes(inv) <= 2);
+					check("back to farming (" + Harvester.state + ")", Harvester.state == Harvester.State.RUN);
+					command(client, "clear @p minecraft:cobblestone");
+					command(client, "clear @p minecraft:shulker_box");
+					next("spare");
+				}
+			}
+			// Spare: your chest first; the box you carry stays empty while the chest has room.
+			case "spare" -> {
+				if (since == 1) {
+					HhConfig.INSTANCE.boxes = HhConfig.Boxes.SPARE;
+					command(client, "item replace entity @p inventory.21 with minecraft:shulker_box");
+					command(client, "give @p minecraft:carrot 640");
+				}
+				if (since == 10) {
+					fillRest(client, inv, 0);
+					mark = Harvester.deposited;
+				}
+				if (since == 20 * 25) {
+					check("spare: stored loose in the chest, the box on you still empty (" + (Harvester.deposited - mark) + " stored, box "
+							+ (Harvester.emptyBox(find(inv, Items.SHULKER_BOX)) ? "empty" : "used") + ")",
+							Harvester.deposited - mark > 300 && Harvester.emptyBox(find(inv, Items.SHULKER_BOX)));
+					HhConfig.INSTANCE.boxes = HhConfig.Boxes.LOADER;
+					command(client, "clear @p minecraft:cobblestone");
+					command(client, "clear @p minecraft:shulker_box");
+					Chests.toggle(client, CHEST);
 					next("hand");
 				}
 			}
@@ -546,6 +644,53 @@ final class SelfTest {
 		int n = 0;
 		for (int i = 0; i < c.size(); i++) n += c.getStack(i).getCount();
 		return n;
+	}
+
+	/** Empty slots filled with cobblestone, leaving {@code leave} free. */
+	private static void fillRest(MinecraftClient client, PlayerInventory inv, int leave) {
+		int left = leave;
+		for (int i = PlayerInventory.MAIN_SIZE - 1; i >= 0; i--) {
+			if (!inv.getStack(i).isEmpty()) continue;
+			if (left-- > 0) continue;
+			command(client, "item replace entity @p " + (i < 9 ? "hotbar." + i : "inventory." + (i - 9)) + " with minecraft:cobblestone 64");
+		}
+	}
+
+	private static ItemStack find(PlayerInventory inv, net.minecraft.item.Item item) {
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (inv.getStack(i).isOf(item)) return inv.getStack(i);
+		return ItemStack.EMPTY;
+	}
+
+	private static int carrotsIn(ItemStack box) {
+		var c = box.get(net.minecraft.component.DataComponentTypes.CONTAINER);
+		return c == null ? 0 : c.streamNonEmpty().filter(s -> s.isOf(Items.CARROT)).mapToInt(ItemStack::getCount).sum();
+	}
+
+	/** What the filled boxes on you hold, sorted: "carrot,wheat" when each holds one crop. "mixed" if one holds two. */
+	private static String boxKinds(PlayerInventory inv) {
+		java.util.TreeSet<String> kinds = new java.util.TreeSet<>();
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+			ItemStack s = inv.getStack(i);
+			if (!Harvester.isBox(s) || Harvester.emptyBox(s)) continue;
+			var set = s.get(net.minecraft.component.DataComponentTypes.CONTAINER).streamNonEmpty().map(x -> net.minecraft.registry.Registries.ITEM.getId(x.getItem()).getPath()).distinct().toList();
+			if (set.size() != 1) return "mixed";
+			kinds.add(set.getFirst());
+		}
+		return String.join(",", kinds);
+	}
+
+	/** {boxes in the chest full of carrots, loose items in the chest}. */
+	private static int[] chestBoxes(ServerWorld w) {
+		int[] r = new int[2];
+		if (!(w.getBlockEntity(CHEST) instanceof ChestBlockEntity c)) return r;
+		for (int i = 0; i < c.size(); i++) {
+			ItemStack s = c.getStack(i);
+			if (s.isEmpty()) continue;
+			if (Harvester.isBox(s)) {
+				if (carrotsIn(s) == 27 * 64) r[0]++;
+			} else r[1] += s.getCount();
+		}
+		return r;
 	}
 
 	private static int filledBoxes(PlayerInventory inv) {

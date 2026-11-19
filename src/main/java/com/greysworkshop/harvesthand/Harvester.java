@@ -127,6 +127,8 @@ public final class Harvester {
 		state = State.RUN;
 		paused = holding = fullWarned = false;
 		harvested = replanted = planted = tilled = deposited = ticks = fortuneHarvests = 0;
+		boxesFilled = boxesStored = 0;
+		boxRound = false;
 		waitTotal = waitCount = waitMax = 0;
 		lastFortune = -1;
 		fightUntil = 0;
@@ -147,12 +149,7 @@ public final class Harvester {
 		chat(p, Text.literal("Farming " + f.cells.size() + " plots (" + x + " × " + z + ")"
 				+ (f.chests.isEmpty() ? "" : ", " + f.chests.size() + " of your chest" + (f.chests.size() == 1 ? "" : "s") + " for a full inventory")
 				+ ". Numpad 5 pauses, Numpad 6 has the settings and Stop.").formatted(Formatting.GREEN));
-		if (f.chests.isEmpty() && HhConfig.INSTANCE.deposit) {
-			int boxes = emptyBoxes(p.getInventory());
-			chat(p, Text.literal(boxes > 0 ? "A full inventory goes into your " + boxes + " empty shulker box" + (boxes == 1 ? "" : "es")
-					+ " (put against the wall, filled and picked back up). Place a chest yourself to store in that instead."
-					: "No chest of yours here: place one at the farm's edge (or look at one and /hh chest), or carry empty shulker boxes, to store a full inventory.").formatted(Formatting.GRAY));
-		}
+		if (HhConfig.INSTANCE.deposit) chat(p, Text.literal(storeNote(p.getInventory())).formatted(Formatting.GRAY));
 		chat(p, Text.literal(toolNote(p.getInventory())).formatted(Formatting.GRAY));
 		pickCrop(p.getInventory(), client.world);
 		int bare = (int) f.cells.stream().filter(c -> client.world.getBlockState(c).isAir() || Farm.weed(client.world, c, client.world.getBlockState(c))).count();
@@ -164,6 +161,24 @@ public final class Harvester {
 					+ ".").formatted(Formatting.GRAY));
 		}
 		log("farm: {} cells, {} standing, {} chests, centre {}, main {}", f.cells.size(), f.stand.size(), f.chests.size(), f.centre, f.main);
+	}
+
+	/** Where a full inventory goes, in words. */
+	static String storeNote(PlayerInventory inv) {
+		int empty = emptyBoxes(inv), part = partBoxes(inv);
+		String carried = empty + part == 0 ? "" : (part > 0 ? part + " part-filled" + (empty > 0 ? " and " : "") : "") + (empty > 0 ? empty + " empty" : "")
+				+ " shulker box" + (empty + part == 1 ? "" : "es") + " on you";
+		boolean chests = !farm.chests.isEmpty();
+		return switch (mode()) {
+			case OFF -> chests ? "A full inventory goes into your chests (shulker boxes are off)." : "No chest of yours here: place one at the farm's edge, or look at one and /hh chest.";
+			case SPARE -> (chests ? "A full inventory goes into your chests" + (carried.isEmpty() ? "." : ", then the " + carried + " once they're full.")
+					: carried.isEmpty() ? "No chest of yours and no shulker boxes on you: place a chest at the farm's edge, or /hh chest on one." : "A full inventory goes into the " + carried + ".")
+					+ " Part-filled boxes are topped up first.";
+			case LOADER -> (chests ? "Shulker loader: every box is filled to the top" + (HhConfig.INSTANCE.oneCropPerBox ? " with one crop" : "")
+					+ " and full boxes go into your chests; empty boxes come out of them" + (carried.isEmpty() ? "" : " (" + carried + ")") + ". Loose only once there are no boxes left."
+					: carried.isEmpty() ? "No chest of yours and no shulker boxes on you: place a chest at the farm's edge, or /hh chest on one."
+					: "Shulker loader: the " + carried + " are filled to the top, part-filled first. Put empty boxes in a chest of yours and it fetches them.");
+		};
 	}
 
 	/** Which tool it'll harvest with, in words. */
@@ -271,9 +286,10 @@ public final class Harvester {
 			depositStage = 15;
 			return;
 		}
-		if (shouldDeposit(p)) {
+		if (shouldDeposit(p, w)) {
 			state = State.DEPOSIT;
 			depositStage = 0;
+			boxRound = false;
 			chest = null;
 			walkingTo = null;
 			walker.clear(client);
@@ -656,25 +672,70 @@ public final class Harvester {
 		return false;
 	}
 
+	/** Where the walker may go: the farm, where you are and your chests (a marked one can be a little way off), with a margin. */
 	private static int[] bounds(ClientPlayerEntity p) {
-		return new int[] {Math.min(farm.minX, p.getBlockX()) - 3, Math.min(farm.minY, p.getBlockY()) - 6, Math.min(farm.minZ, p.getBlockZ()) - 3,
-				Math.max(farm.maxX, p.getBlockX()) + 3, Math.max(farm.maxY, p.getBlockY()) + 6, Math.max(farm.maxZ, p.getBlockZ()) + 3};
+		int[] b = {Math.min(farm.minX, p.getBlockX()), Math.min(farm.minY, p.getBlockY()), Math.min(farm.minZ, p.getBlockZ()),
+				Math.max(farm.maxX, p.getBlockX()), Math.max(farm.maxY, p.getBlockY()), Math.max(farm.maxZ, p.getBlockZ())};
+		for (BlockPos c : farm.chests) {
+			b[0] = Math.min(b[0], c.getX());
+			b[1] = Math.min(b[1], c.getY());
+			b[2] = Math.min(b[2], c.getZ());
+			b[3] = Math.max(b[3], c.getX());
+			b[4] = Math.max(b[4], c.getY());
+			b[5] = Math.max(b[5], c.getZ());
+		}
+		return new int[] {b[0] - 3, b[1] - 6, b[2] - 3, b[3] + 3, b[4] + 6, b[5] + 3};
 	}
 
-	// ---------------------------------------------------------------- the chest
+	// ---------------------------------------------------------------- storing: chests and shulker boxes
 
-	private static boolean shouldDeposit(ClientPlayerEntity p) {
+	/** What the next visit to a container is for: loose harvest, or swapping boxes (full ones in, empty ones out). */
+	private enum Job {LOOSE, BOXES}
+
+	private static Job job = Job.LOOSE;
+	/** This round of storing has already been to a chest for boxes: once is enough. */
+	private static boolean boxRound, fetched;
+	/** What goes in the box being filled (null: any of the harvest), and how many of its 27 slots were used when it opened. */
+	private static Item boxItem;
+	private static int boxUsedBefore;
+	/** Boxes filled to the top, and boxes put in your chests, since it started. */
+	static int boxesFilled, boxesStored;
+
+	static HhConfig.Boxes mode() {
+		return HhConfig.INSTANCE.boxMode();
+	}
+
+	static int emptySlots(PlayerInventory inv) {
+		int n = 0;
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (inv.getStack(i).isEmpty()) n++;
+		return n;
+	}
+
+	/** A container of yours it can still use, for loose harvest or (boxes) to swap boxes in. */
+	private static boolean containerFree(ClientWorld w, Job j) {
+		for (BlockPos c : farm.chests) {
+			if (fullChests.contains(c)) continue;
+			if (j == Job.BOXES && Chests.placedBox(w, c)) continue;
+			return true;
+		}
+		return false;
+	}
+
+	private static boolean shouldDeposit(ClientPlayerEntity p, ClientWorld w) {
 		PlayerInventory inv = p.getInventory();
-		if (inv.getEmptySlot() >= 0) {
+		int empty = emptySlots(inv);
+		// Filling boxes from your chests keeps one slot free, to take the next box out with.
+		boolean loader = mode() == HhConfig.Boxes.LOADER && containerFree(w, Job.BOXES);
+		if (empty > (loader ? 1 : 0)) {
 			fullWarned = false;
 			return false;
 		}
-		boolean chests = !farm.chests.isEmpty() && !fullChests.containsAll(farm.chests);
-		boolean boxes = !boxWarned && emptyBoxes(inv) > 0;
+		boolean chests = containerFree(w, Job.LOOSE);
+		boolean boxes = mode() != HhConfig.Boxes.OFF && !boxWarned && pickBox(inv) >= 0;
 		if (!HhConfig.INSTANCE.deposit || !chests && !boxes || depositable(inv).isEmpty()) {
-			if (!fullWarned) {
+			if (empty == 0 && !fullWarned) {
 				fullWarned = true;
-				chat(p, Text.literal(farm.chests.isEmpty() ? "Inventory full: still harvesting and replanting, but drops stay on the ground. Place a chest at the farm's edge (or carry empty shulker boxes) to store them."
+				chat(p, Text.literal(farm.chests.isEmpty() ? "Inventory full: still harvesting and replanting, but drops stay on the ground. Place a chest at the farm's edge (or /hh chest on one, or carry shulker boxes) to store them."
 						: "Inventory full and your chests are full: still harvesting and replanting, drops stay on the ground.").formatted(Formatting.GOLD));
 			}
 			return false;
@@ -707,30 +768,86 @@ public final class Harvester {
 		return out;
 	}
 
+	/** How much of each item there is to store. */
+	private static Map<Item, Integer> toStore(PlayerInventory inv) {
+		Map<Item, Integer> out = new java.util.LinkedHashMap<>();
+		for (int i : depositable(inv)) out.merge(inv.getStack(i).getItem(), inv.getStack(i).getCount(), Integer::sum);
+		return out;
+	}
+
+	/** The nearest container of yours for this job, a box on the ground first for loose harvest when filling boxes. */
+	private static BlockPos nearestContainer(ClientPlayerEntity p, ClientWorld w, Job j) {
+		boolean groundFirst = j == Job.LOOSE && mode() == HhConfig.Boxes.LOADER;
+		return farm.chests.stream().filter(c -> !fullChests.contains(c) && (j == Job.LOOSE || !Chests.placedBox(w, c)))
+				.min(java.util.Comparator.<BlockPos>comparingInt(c -> groundFirst && Chests.placedBox(w, c) ? 0 : 1)
+						.thenComparingDouble(c -> p.getEntityPos().squaredDistanceTo(Vec3d.ofCenter(c)))).orElse(null);
+	}
+
+	/**
+	 * What to do next while storing. Off: chests only. Spare: your chests first, then the boxes you carry. Loader:
+	 * full boxes into your chests, then the boxes you carry (part-filled ones first), then a box on the ground you
+	 * marked, then fresh boxes from your chests, and loose into a chest only once there are no boxes left.
+	 */
+	private static void plan(ClientPlayerEntity p, ClientWorld w) {
+		PlayerInventory inv = p.getInventory();
+		boolean produce = !depositable(inv).isEmpty();
+		HhConfig.Boxes m = mode();
+		chest = null;
+		depositWait = 0;
+		if (m == HhConfig.Boxes.LOADER) {
+			if (storable(inv) >= 0 && (chest = nearestContainer(p, w, Job.BOXES)) != null) {
+				job = Job.BOXES;
+				fetched = false;
+				depositStage = 1;
+				return;
+			}
+			if (produce && !boxWarned && pickBox(inv) >= 0) {
+				depositStage = 10;
+				return;
+			}
+			if (produce && (chest = nearestContainer(p, w, Job.LOOSE)) != null && Chests.placedBox(w, chest)) {
+				job = Job.LOOSE;
+				depositStage = 1;
+				return;
+			}
+			if (produce && !boxRound && (chest = nearestContainer(p, w, Job.BOXES)) != null) {
+				job = Job.BOXES;
+				fetched = false;
+				depositStage = 1;
+				return;
+			}
+		}
+		if (produce && (chest = nearestContainer(p, w, Job.LOOSE)) != null) {
+			job = Job.LOOSE;
+			depositStage = 1;
+			return;
+		}
+		if (produce && m == HhConfig.Boxes.SPARE && !boxWarned && pickBox(inv) >= 0) {
+			depositStage = 10;
+			return;
+		}
+		depositStage = 0;
+		boxRound = false;
+		state = State.RUN;
+	}
+
 	private static void deposit(MinecraftClient client, ClientPlayerEntity p, ClientWorld w) {
 		status = Text.literal("Storing the harvest");
 		switch (depositStage) {
-			case 0 -> {
-				// The nearest chest that isn't full.
-				chest = farm.chests.stream().filter(c -> !fullChests.contains(c))
-						.min(java.util.Comparator.comparingDouble(c -> p.getEntityPos().squaredDistanceTo(Vec3d.ofCenter(c)))).orElse(null);
-				if (chest == null) {
-					spot = null;
-					// None of your chests has room: an empty shulker box, if you carry one.
-					depositStage = emptyBoxes(p.getInventory()) > 0 && !boxWarned ? 10 : -1;
-					if (depositStage < 0) state = State.RUN;
-					return;
-				}
-				BlockPos c = chest;
-				double want = p.getBlockInteractionRange() - 1.0;
-				if (!walker.plan(w, p, q -> Vec3d.ofBottomCenter(q).add(0, 1.62, 0).squaredDistanceTo(Vec3d.ofCenter(c)) <= want * want, bounds(p))) {
-					fullChests.add(c);
-					log("can't get to the chest at {}", c.toShortString());
-					return;
-				}
-				depositStage = 1;
-			}
+			case 0 -> plan(p, w);
 			case 1 -> {
+				if (chest == null || !Chests.container(w, chest)) {
+					depositStage = 0;
+					return;
+				}
+				if (++depositWait > 600) {
+					// Half a minute and still not there: leave that one be.
+					log("never got to the chest at {}", chest.toShortString());
+					fullChests.add(chest);
+					walker.stop(client);
+					depositStage = 0;
+					return;
+				}
 				double range = p.getBlockInteractionRange() - 0.3;
 				if (p.getEyePos().squaredDistanceTo(Vec3d.ofCenter(chest)) <= range * range && (walker.arrived() || !walker.moving())) {
 					walker.stop(client);
@@ -743,10 +860,20 @@ public final class Harvester {
 					depositWait = 40;
 					return;
 				}
-				if (!walker.tick(client) || walker.arrived() && !walker.moving()) depositStage = 0;
+				if (!walker.moving() || walker.arrived()) {
+					BlockPos c = chest;
+					double want = p.getBlockInteractionRange() - 1.0;
+					if (!walker.plan(w, p, q -> Vec3d.ofBottomCenter(q).add(0, 1.62, 0).squaredDistanceTo(Vec3d.ofCenter(c)) <= want * want, bounds(p))) {
+						fullChests.add(c);
+						log("can't get to the chest at {}", c.toShortString());
+						depositStage = 0;
+						return;
+					}
+				}
+				walker.tick(client);
 			}
 			case 2 -> {
-				if (p.currentScreenHandler instanceof GenericContainerScreenHandler) {
+				if (open(p)) {
 					depositStage = 3;
 					depositWait = 0;
 				} else if (--depositWait <= 0) {
@@ -756,7 +883,7 @@ public final class Harvester {
 			}
 			case 3 -> {
 				ScreenHandler h = p.currentScreenHandler;
-				if (!(h instanceof GenericContainerScreenHandler)) {
+				if (!open(p)) {
 					depositStage = 0;
 					return;
 				}
@@ -764,14 +891,17 @@ public final class Harvester {
 					depositWait--;
 					return;
 				}
+				depositWait = 1;
+				if (job == Job.BOXES) {
+					swapBoxes(client, p, h);
+					return;
+				}
 				List<Integer> todo = depositable(p.getInventory());
 				int before = todo.size();
-				boolean room = containerHasRoom(h, p);
+				boolean room = containerHasRoom(h, p, null);
 				if (todo.isEmpty() || !room) {
 					if (!room) fullChests.add(chest);
-					closeChest(client);
-					state = State.RUN;
-					depositStage = 0;
+					shut(p);
 					return;
 				}
 				// Two stacks a tick.
@@ -785,10 +915,8 @@ public final class Harvester {
 				}
 				if (depositable(p.getInventory()).size() == before) {
 					fullChests.add(chest);
-					closeChest(client);
-					depositStage = 0;
+					shut(p);
 				}
-				depositWait = 1;
 			}
 			case 10, 11, 12, 13, 14, 15, 16 -> shulker(client, p, w);
 			default -> {
@@ -798,27 +926,196 @@ public final class Harvester {
 		}
 	}
 
+	/** A chest, barrel or box on the ground of yours is open. */
+	private static boolean open(ClientPlayerEntity p) {
+		return p.currentScreenHandler instanceof GenericContainerScreenHandler || p.currentScreenHandler instanceof ShulkerBoxScreenHandler && box == null;
+	}
+
+	/** Done with this chest: shut it and work out what's next. */
+	private static void shut(ClientPlayerEntity p) {
+		if (p.currentScreenHandler != p.playerScreenHandler) p.closeHandledScreen();
+		depositStage = 0;
+	}
+
+	/**
+	 * At a chest, one move a tick: full boxes go in; then for each crop still to store with no box on you that takes
+	 * it, a box comes out (part-filled with that crop first, else an empty one). With no box to be had, the rest goes
+	 * in loose.
+	 */
+	private static void swapBoxes(MinecraftClient client, ClientPlayerEntity p, ScreenHandler h) {
+		PlayerInventory inv = p.getInventory();
+		int full = storable(inv);
+		if (full >= 0) {
+			Slot slot = playerSlot(h, p, full);
+			if (slot == null || !containerHasRoom(h, p, net.minecraft.item.Items.SHULKER_BOX)) {
+				fullChests.add(chest);
+				shut(p);
+				return;
+			}
+			client.interactionManager.clickSlot(h.syncId, slot.id, 0, SlotActionType.QUICK_MOVE, p);
+			if (!isBox(inv.getStack(full))) boxesStored++;
+			return;
+		}
+		// Loose harvest in the chest (one stack put in to make room for a box, or what was there before): out again to be
+		// boxed, as long as a box here or on you takes it. One slot stays free for the next box.
+		if (emptySlots(inv) >= 2) {
+			for (Slot s : h.slots) {
+				ItemStack st = s.getStack();
+				if (s.inventory == inv || st.isEmpty() || isBox(st) || !Farm.produce(st.getItem()) || !boxTakes(h, st.getItem())) continue;
+				int count = st.getCount();
+				Item item = st.getItem();
+				client.interactionManager.clickSlot(h.syncId, s.id, 0, SlotActionType.QUICK_MOVE, p);
+				deposited -= count - s.getStack().getCount();
+				log("packing {} {} from the chest", count, item);
+				return;
+			}
+		}
+		Map<Item, Integer> need = toStore(inv);
+		// Crops a box on you already takes need no other.
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+			ItemStack s = inv.getStack(i);
+			if (!isBox(s)) continue;
+			need.keySet().removeIf(item -> takes(s, item));
+		}
+		if (need.isEmpty()) {
+			// Every crop has a box now. Nothing came out this time: no more coming from chests this round.
+			if (!fetched) boxRound = true;
+			shut(p);
+			return;
+		}
+		Item item = need.keySet().iterator().next();
+		Slot best = null;
+		int bestUsed = -1;
+		for (Slot s : h.slots) {
+			if (s.inventory == inv || !isBox(s.getStack()) || !takes(s.getStack(), item)) continue;
+			int u = used(s.getStack());
+			if (u > bestUsed) {
+				best = s;
+				bestUsed = u;
+			}
+		}
+		if (best == null) {
+			// No box for it in this chest: if it's the only kind left, store the rest loose.
+			log("no box for {} in the chest at {}", item, chest.toShortString());
+			boxRound = true;
+			job = Job.LOOSE;
+			return;
+		}
+		if (emptySlots(inv) == 0) {
+			// No room to take the box: one stack of the harvest goes in first.
+			List<Integer> todo = depositable(inv);
+			Slot s = todo.isEmpty() ? null : playerSlot(h, p, todo.getLast());
+			if (s == null || !containerHasRoom(h, p, null)) {
+				shut(p);
+				return;
+			}
+			int count = s.getStack().getCount();
+			client.interactionManager.clickSlot(h.syncId, s.id, 0, SlotActionType.QUICK_MOVE, p);
+			deposited += count - s.getStack().getCount();
+			return;
+		}
+		client.interactionManager.clickSlot(h.syncId, best.id, 0, SlotActionType.QUICK_MOVE, p);
+		fetched = true;
+	}
+
+	/** A box in the open chest or on you that takes this item. */
+	private static boolean boxTakes(ScreenHandler h, Item item) {
+		for (Slot s : h.slots) if (isBox(s.getStack()) && takes(s.getStack(), item)) return true;
+		return false;
+	}
+
 	// ---------------------------------------------------------------- the shulker box
 
-	static boolean emptyBox(ItemStack s) {
-		if (!(s.getItem() instanceof BlockItem bi) || !(bi.getBlock() instanceof ShulkerBoxBlock)) return false;
+	private static ContainerComponent contents(ItemStack s) {
 		ContainerComponent c = s.get(DataComponentTypes.CONTAINER);
-		return c == null || c.streamNonEmpty().findAny().isEmpty();
+		return c == null ? ContainerComponent.DEFAULT : c;
+	}
+
+	static boolean emptyBox(ItemStack s) {
+		return isBox(s) && contents(s).streamNonEmpty().findAny().isEmpty();
 	}
 
 	static boolean isBox(ItemStack s) {
 		return s.getItem() instanceof BlockItem bi && bi.getBlock() instanceof ShulkerBoxBlock;
 	}
 
-	static int emptyBoxes(PlayerInventory inv) {
-		int n = 0;
-		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (emptyBox(inv.getStack(i))) n += inv.getStack(i).getCount();
-		return n;
+	/** Slots used in a box, of its 27. */
+	static int used(ItemStack box) {
+		return (int) contents(box).streamNonEmpty().count();
+	}
+
+	/** A box holding nothing but harvest (or nothing): the only kind it fills. Your other boxes are never touched. */
+	static boolean harvestBox(ItemStack s) {
+		return isBox(s) && contents(s).streamNonEmpty().allMatch(t -> Farm.produce(t.getItem()));
+	}
+
+	/** Whether this box takes more of this item: harvest only, the same crop throughout with one crop per box on, and room. */
+	static boolean takes(ItemStack box, Item item) {
+		if (!harvestBox(box)) return false;
+		boolean sorted = HhConfig.INSTANCE.oneCropPerBox;
+		List<ItemStack> in = contents(box).streamNonEmpty().toList();
+		if (sorted && in.stream().anyMatch(t -> !t.isOf(item))) return false;
+		if (in.size() < 27) return true;
+		return in.stream().anyMatch(t -> t.isOf(item) && t.getCount() < t.getMaxCount());
+	}
+
+	/** A box on you that's done (all 27 slots used, nothing more of this harvest fits): goes in your chest. -1: none. */
+	static int storable(PlayerInventory inv) {
+		java.util.Set<Item> items = toStore(inv).keySet();
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+			ItemStack s = inv.getStack(i);
+			if (harvestBox(s) && used(s) == 27 && items.stream().noneMatch(item -> takes(s, item))) return i;
+		}
+		return -1;
+	}
+
+	/**
+	 * The box on you to fill next, and what goes in it ({@link #boxItem}; null: any of the harvest). Part-filled boxes
+	 * first, the fullest first, so you're never left with several half-full ones; an empty box only when none takes
+	 * what there is. -1: none.
+	 */
+	static int pickBox(PlayerInventory inv) {
+		Map<Item, Integer> items = toStore(inv);
+		boolean sorted = HhConfig.INSTANCE.oneCropPerBox;
+		int best = -1;
+		long bestScore = -1;
+		Item bestItem = null;
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+			ItemStack s = inv.getStack(i);
+			if (!harvestBox(s)) continue;
+			for (Map.Entry<Item, Integer> e : items.entrySet()) {
+				if (!takes(s, e.getKey())) continue;
+				long score = used(s) * 1_000_000L + (sorted ? e.getValue() : 0);
+				if (score > bestScore) {
+					best = i;
+					bestScore = score;
+					bestItem = sorted ? e.getKey() : null;
+				}
+			}
+		}
+		boxItem = bestItem;
+		return best;
 	}
 
 	static int boxes(PlayerInventory inv) {
 		int n = 0;
 		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (isBox(inv.getStack(i))) n += inv.getStack(i).getCount();
+		return n;
+	}
+
+	/** Boxes on you with some harvest in and room left. */
+	static int partBoxes(PlayerInventory inv) {
+		int n = 0;
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) {
+			ItemStack s = inv.getStack(i);
+			if (harvestBox(s) && !emptyBox(s) && used(s) < 27) n++;
+		}
+		return n;
+	}
+
+	static int emptyBoxes(PlayerInventory inv) {
+		int n = 0;
+		for (int i = 0; i < PlayerInventory.MAIN_SIZE; i++) if (emptyBox(inv.getStack(i))) n++;
 		return n;
 	}
 
@@ -880,13 +1177,13 @@ public final class Harvester {
 				boolean inside = p.getBoundingBox().intersects(new Box(spot));
 				if (!inside && p.getEyePos().squaredDistanceTo(Vec3d.ofCenter(spot)) <= range * range && (walker.arrived() || !walker.moving())) {
 					walker.stop(client);
-					int slot = -1;
-					for (int i = 0; i < PlayerInventory.MAIN_SIZE && slot < 0; i++) if (emptyBox(inv.getStack(i))) slot = i;
+					int slot = pickBox(inv);
 					if (slot < 0) {
 						spot = null;
-						depositStage = -1;
+						depositStage = 0;
 						return;
 					}
+					log("filling the box in slot {} ({} of 27 used) with {}", slot, used(inv.getStack(slot)), boxItem == null ? "any harvest" : boxItem);
 					hand(client, p, slot, -1);
 					boxHeld = boxes(inv);
 					Vec3d hit = Vec3d.ofCenter(boxWall).add(Vec3d.of(boxFace.getVector()).multiply(0.5));
@@ -927,8 +1224,9 @@ public final class Harvester {
 			}
 			case 13 -> {
 				status = Text.literal("Filling the shulker box");
-				if (p.currentScreenHandler instanceof ShulkerBoxScreenHandler) {
+				if (p.currentScreenHandler instanceof ShulkerBoxScreenHandler h) {
 					boxTicks = 0;
+					boxUsedBefore = boxUsed(h, p);
 					depositStage = 14;
 				} else if (boxTicks > 40) {
 					// Wouldn't open (something in front of it): take it back.
@@ -946,7 +1244,9 @@ public final class Harvester {
 				}
 				if (boxTicks % 2 == 1) return;
 				List<Integer> todo = depositable(inv);
-				if (todo.isEmpty() || !containerHasRoom(h, p) || boxTicks > 200) {
+				if (boxItem != null) todo.removeIf(i -> !inv.getStack(i).isOf(boxItem));
+				if (todo.isEmpty() || !containerHasRoom(h, p, boxItem) || boxTicks > 200) {
+					filledUp(h, p);
 					p.closeHandledScreen();
 					boxTicks = 0;
 					depositStage = 15;
@@ -961,7 +1261,10 @@ public final class Harvester {
 					client.interactionManager.clickSlot(h.syncId, slot.id, 0, SlotActionType.QUICK_MOVE, p);
 					deposited += count - inv.getStack(i).getCount();
 				}
-				if (depositable(inv).size() == before) {
+				List<Integer> after = depositable(inv);
+				if (boxItem != null) after.removeIf(i -> !inv.getStack(i).isOf(boxItem));
+				if (after.size() == before) {
+					filledUp(h, p);
 					p.closeHandledScreen();
 					boxTicks = 0;
 					depositStage = 15;
@@ -1014,8 +1317,8 @@ public final class Harvester {
 					log("box back after {} ticks", boxTicks);
 					box = null;
 					walker.clear(client);
+					// More to store, another box to fill or full ones to put away: plan() sees.
 					depositStage = 0;
-					state = State.RUN;
 					return;
 				}
 				BlockPos at = box;
@@ -1053,13 +1356,30 @@ public final class Harvester {
 		chat(p, Text.literal(why + " Still harvesting; drops stay on the ground.").formatted(Formatting.GOLD));
 	}
 
-	private static boolean containerHasRoom(ScreenHandler h, ClientPlayerEntity p) {
+	/** Room in the open container for this item (null: any of the harvest; a shulker box needs an empty slot). */
+	private static boolean containerHasRoom(ScreenHandler h, ClientPlayerEntity p, Item item) {
 		for (Slot s : h.slots) {
 			if (s.inventory == p.getInventory()) continue;
 			ItemStack st = s.getStack();
-			if (st.isEmpty() || Farm.produce(st.getItem()) && st.getCount() < st.getMaxCount()) return true;
+			if (st.isEmpty()) return true;
+			if (item == net.minecraft.item.Items.SHULKER_BOX) continue;
+			if ((item == null ? Farm.produce(st.getItem()) : st.isOf(item)) && st.getCount() < st.getMaxCount()) return true;
 		}
 		return false;
+	}
+
+	/** Slots used in the open box. */
+	private static int boxUsed(ScreenHandler h, ClientPlayerEntity p) {
+		int n = 0;
+		for (Slot s : h.slots) if (s.inventory != p.getInventory() && !s.getStack().isEmpty()) n++;
+		return n;
+	}
+
+	/** Closing a box: count it if this filled it to the top. */
+	private static void filledUp(ScreenHandler h, ClientPlayerEntity p) {
+		int now = boxUsed(h, p);
+		if (now == 27 && boxUsedBefore < 27) boxesFilled++;
+		log("box closed: {} of 27 used (was {})", now, boxUsedBefore);
 	}
 
 	private static Slot playerSlot(ScreenHandler h, ClientPlayerEntity p, int index) {
@@ -1288,15 +1608,21 @@ public final class Harvester {
 
 	static void chestAdded(MinecraftClient client, BlockPos c, String msg) {
 		if (running() && farm != null) {
-			farm.chests.add(c);
+			BlockPos other = client.world == null ? null : Chests.otherHalf(client.world, c);
+			if (other == null || !farm.chests.contains(other)) farm.chests.add(c);
 			fullChests.remove(c);
+			if (other != null) fullChests.remove(other);
 			fullWarned = false;
 		}
-		say(client, msg);
+		if (!msg.isEmpty()) say(client, msg);
 	}
 
 	static void chestRemoved(MinecraftClient client, BlockPos c) {
-		if (farm != null) farm.chests.remove(c);
+		BlockPos other = client.world == null ? null : Chests.otherHalf(client.world, c);
+		if (farm != null) {
+			farm.chests.remove(c);
+			if (other != null) farm.chests.remove(other);
+		}
 		say(client, "Harvest Hand won't use this chest any more.");
 	}
 

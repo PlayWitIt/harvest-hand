@@ -45,6 +45,12 @@ final class Hud {
 			lines.add(Text.literal(best >= 0 ? "Fortune tool found: using it from the next crop" : !why.isEmpty() ? why : "By hand: no tool with Fortune on you")
 					.formatted(Formatting.YELLOW));
 		}
+		var inv = client.player.getInventory();
+		int part = Harvester.partBoxes(inv);
+		if (Harvester.boxesFilled > 0 || Harvester.boxesStored > 0 || part > 0) {
+			lines.add(Text.literal("Boxes: " + Harvester.boxesFilled + " filled to the top" + (Harvester.boxesStored > 0 ? ", " + Harvester.boxesStored + " put in your chests" : "")
+					+ (part > 0 ? " · " + part + " part-filled on you" : "")).formatted(Formatting.AQUA));
+		}
 		return lines;
 	}
 }

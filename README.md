@@ -17,11 +17,24 @@ harvested the moment it's fully grown, and the same crop is planted straight bac
   It walks to the nearest ripe crop or dropped item and harvests everything it passes. With nothing to do it waits in
   the middle of the farm, where every plot is closest.
 - **Full inventory:** it stores the harvest and keeps one stack of each seed for replanting. It only uses chests you
-  placed yourself (place a chest or barrel at the farm's edge and it's remembered), or ones you mark by looking at them
-  and typing `/hh chest`. It never places a chest, and never uses one it just finds.
-  With none of your chests, it uses an **empty shulker box** you carry. It puts the box against the wall at head height,
-  fills it, breaks it and picks it back up before carrying on. If you stop it while a box is out, it tells you where.
-  With neither, it keeps harvesting and replanting, and the drops stay on the ground.
+  placed yourself (place a chest or barrel and it's remembered), or ones you add by looking at a chest, barrel or a
+  shulker box you placed and typing `/hh chest`. It uses them at the farm or up to 16 blocks outside it, and a double chest
+  counts once. `/hh chest` only ever adds; `/hh chest remove` takes one off and `/hh chests` lists them. It never places
+  a chest, and never uses one it just finds.
+- **Shulker boxes, three ways** (`/hh boxes`, or the settings):
+  - **loader** (the default, for plenty of boxes): it does a shulker loader's job. Every box is filled to the top, and
+    part-filled boxes are always topped up before an empty one is opened. Full boxes go into your chests, and empty
+    ones are taken out of them. Harvest goes in loose only once there's no box left. Keep a chest of empty boxes at the
+    farm and you get chests of full boxes back.
+  - **spare** (a few boxes): your chests first, and the boxes you carry only once they're full. Part-filled boxes are
+    topped up first here too.
+  - **off**: chests only.
+
+  **One crop per box** (on by default) keeps a box to carrots or to wheat, so you end up with one part-filled box per
+  crop at most. It only fills boxes that hold nothing but harvest: a box with anything else in it is never touched.
+  A box you carry is put against the wall at head height, filled, broken and picked back up. If you stop it while a
+  box is out, it tells you where. With no chest and no box, it keeps harvesting and replanting, and the drops stay on
+  the ground.
 - **Every plot planted:** empty farmland is planted at once. On a brand-new farm with nothing growing, it plants what
   you carry most of, or picks up carrots, potatoes or seeds lying on the ground and plants those.
 - **As much ground as possible:** with a hoe, it clears grass and flowers, tills bare dirt and grass the water reaches
@@ -42,7 +55,10 @@ The farm is found when you start: every farmland plot you can walk to from where
 | Numpad 5 | `/hh pause` | pause / carry on |
 | Numpad 6 | `/hh menu` | settings, with Start / Stop |
 | | `/hh stop` | stop |
-| | `/hh chest` | let it use the chest you're looking at (again to stop) |
+| | `/hh chest` | add the chest, barrel or placed shulker box you're looking at |
+| | `/hh chest remove` | stop it using the one you're looking at |
+| | `/hh chests` | list them (`/hh chests clear` forgets them all here) |
+| | `/hh boxes loader\|spare\|off\|onecrop` | how shulker boxes are used; `onecrop` turns one crop per box on or off |
 | | `/hh` | status |
 
 Settings are on Numpad 6, and in `config/harvesthand.json`.
@@ -51,7 +67,7 @@ Settings are on Numpad 6, and in `config/harvesthand.json`.
 
 `./gradlew runSelfTest` builds a 31 × 31 walled farm with a water source in the middle and runs the mod in survival.
 It checks that the farm is found, that ripe crops are cleared with Fortune and pick-up works, and how long a single
-ripe crop waits. It also checks keeping up at 13× growth, storing only in the chest you placed, filling a shulker box and picking it back up, harvesting by hand, and pause and stop.
+ripe crop waits. It also checks keeping up at 13× growth, storing only in the chest you placed, filling shulker boxes (one crop each) and picking them back up, topping up a part-filled box to the top before an empty one (and never touching a box of your own things), the shulker loader (empty boxes from your chest, full ones back, nothing loose), spare mode, harvesting by hand, and pause and stop.
 
 `./gradlew runFarmTest` builds a farm like the ones people really make: nine 9 × 9 farms side by side, each with its water
 source. It starts with nothing growing, no carrots on you and carrots lying on the ground, and one of the nine still

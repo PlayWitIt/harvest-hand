@@ -41,7 +41,7 @@ public final class HarvestHand implements ClientModInitializer {
 						.executes(c -> {
 							MinecraftClient client = MinecraftClient.getInstance();
 							if (client.player != null) Harvester.chat(client.player, Text.literal(Harvester.running() ? Hud.lines(client).stream().map(Text::getString).reduce((a, b) -> a + " · " + b).orElse("")
-									: "/hh start [radius] while standing in your farm (Numpad 4), /hh pause (Numpad 5), settings (Numpad 6, or /hh menu), /hh stop, /hh chest (the chest you look at), /hh perTick <1-4>, /hh radius <4-128>.").formatted(Formatting.GRAY));
+									: "/hh start [radius] while standing in your farm (Numpad 4), /hh pause (Numpad 5), settings (Numpad 6, or /hh menu), /hh stop, /hh chest (add the chest or shulker box you look at; /hh chest remove, /hh chests lists them), /hh boxes off|spare|loader|onecrop, /hh perTick <1-4>, /hh radius <4-128>.").formatted(Formatting.GRAY));
 							return 1;
 						})
 						.then(literal("start").executes(c -> run(client -> Harvester.startOrResume(client)))
@@ -50,7 +50,20 @@ public final class HarvestHand implements ClientModInitializer {
 									return run(client -> Harvester.start(client, r));
 								})))
 						.then(literal("menu").executes(c -> run(client -> client.setScreen(new HhScreen()))))
-						.then(literal("chest").executes(c -> run(Chests::toggleLooked)))
+						.then(literal("chest").executes(c -> run(Chests::markLooked))
+								.then(literal("add").executes(c -> run(Chests::markLooked)))
+								.then(literal("remove").executes(c -> run(Chests::removeLooked))))
+						.then(literal("chests").executes(c -> run(Chests::list))
+								.then(literal("clear").executes(c -> run(Chests::clear))))
+						.then(literal("boxes").executes(c -> say(boxesNote()))
+								.then(literal("off").executes(c -> setBoxes(HhConfig.Boxes.OFF)))
+								.then(literal("spare").executes(c -> setBoxes(HhConfig.Boxes.SPARE)))
+								.then(literal("loader").executes(c -> setBoxes(HhConfig.Boxes.LOADER)))
+								.then(literal("onecrop").executes(c -> {
+									HhConfig.INSTANCE.oneCropPerBox = !HhConfig.INSTANCE.oneCropPerBox;
+									HhConfig.save();
+									return say(boxesNote());
+								})))
 						.then(literal("pause").executes(c -> run(Harvester::togglePause)))
 						.then(literal("stop").executes(c -> run(client -> Harvester.stop(client, "Stopped."))))
 						.then(literal("radius").then(argument("blocks", IntegerArgumentType.integer(4, 128)).executes(c -> {
@@ -80,6 +93,22 @@ public final class HarvestHand implements ClientModInitializer {
 		MinecraftClient client = MinecraftClient.getInstance();
 		client.send(() -> job.accept(client));
 		return 1;
+	}
+
+	static String boxesNote() {
+		HhConfig c = HhConfig.INSTANCE;
+		String what = switch (c.boxMode()) {
+			case OFF -> "Shulker boxes: off. A full inventory goes into your chests only.";
+			case SPARE -> "Shulker boxes: spare. Your chests first; the boxes you carry once they're full, part-filled boxes topped up first.";
+			case LOADER -> "Shulker boxes: loader. Every box filled to the top, part-filled first; full boxes go into your chests, empty ones come out.";
+		};
+		return what + " One crop per box: " + (c.oneCropPerBox ? "on" : "off") + ". (/hh boxes off|spare|loader|onecrop)";
+	}
+
+	private static int setBoxes(HhConfig.Boxes b) {
+		HhConfig.INSTANCE.boxes = b;
+		HhConfig.save();
+		return say(boxesNote());
 	}
 
 	private static int say(String s) {

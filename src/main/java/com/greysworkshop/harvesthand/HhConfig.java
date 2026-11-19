@@ -36,6 +36,14 @@ final class HhConfig {
 	boolean protectTools = true;
 	int toolReserve = 10;
 	boolean hud = true;
+	/**
+	 * How shulker boxes are used. OFF: never. SPARE (few boxes): only once your chests are full or there are none.
+	 * LOADER (plenty of boxes): instead of a shulker loader. Every box is filled to the top, part-filled ones first;
+	 * full boxes go into your chests and empty ones come out of them; loose harvest only once no box is left.
+	 */
+	Boxes boxes = Boxes.LOADER;
+	/** Each box holds one crop (a box of carrots, a box of wheat...), the way a sorter-loader would. */
+	boolean oneCropPerBox = true;
 	/** Chests you placed or marked ({@code /hh chest}), as "server|dimension|x,y,z": the only ones it stores in. */
 	java.util.List<String> chests = new java.util.ArrayList<>();
 	long totalHarvested;
@@ -44,6 +52,24 @@ final class HhConfig {
 	int reconnectSeconds = 10;
 	/** What to carry on with after a disconnect, until it does. */
 	Resume.Pending resume;
+
+	enum Boxes {
+		OFF("off"), SPARE("spare"), LOADER("loader");
+
+		final String word;
+
+		Boxes(String word) {
+			this.word = word;
+		}
+
+		Boxes next() {
+			return values()[(ordinal() + 1) % values().length];
+		}
+	}
+
+	Boxes boxMode() {
+		return boxes == null ? Boxes.LOADER : boxes;
+	}
 
 	static void load() {
 		try {
@@ -56,6 +82,7 @@ final class HhConfig {
 		}
 		HhConfig c = INSTANCE;
 		if (c.chests == null) c.chests = new java.util.ArrayList<>();
+		if (c.boxes == null) c.boxes = Boxes.LOADER;
 		c.radius = Math.max(4, Math.min(128, c.radius));
 		c.perTick = Math.max(1, Math.min(4, c.perTick));
 		c.minHealth = Math.max(0, Math.min(19, c.minHealth));
